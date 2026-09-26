@@ -5,10 +5,15 @@ from datetime import datetime, timedelta, timezone
 from engine.correlator import correlate_alerts
 from engine.risk_scorer import (
     diminishing_volume,
+    fidelity_a,
     naive_siem_score,
     positive_attribution_sum,
+    score_business_impact,
     score_incident,
     score_incidents,
+    score_privilege,
+    score_progression,
+    score_threat_fidelity,
 )
 from engine.schemas import AlertEntities, Asset, EnrichedAlert, Identity
 
@@ -116,6 +121,100 @@ def test_volume_has_strongly_diminishing_returns() -> None:
     assert diminishing_volume(1) == 1.0
     assert diminishing_volume(120) < 2.0
     assert diminishing_volume(120) < 120 / 10
+
+
+def test_fidelity_a_matches_spec() -> None:
+    score = fidelity_a(
+        severity_raw="Medium",
+        confidence=0.80,
+        false_positive_rate=0.20,
+        event_count=1,
+    )
+    assert score == 5 * 0.80 * (1 - 0.7 * 0.20) * 1.0
+
+
+def test_fidelity_uses_unique_rule_tactic_pairs() -> None:
+    shared = AlertEntities(host_id="host-sandbox-web-07")
+    incident = correlate_alerts(
+        [
+            _alert(
+                alert_id="D0",
+                rule_name="same-rule",
+                mitre_tactic="Discovery",
+                event_count=4,
+                entities=shared,
+                asset=SANDBOX,
+            ),
+            _alert(
+                alert_id="D1",
+                timestamp=T0,
+                rule_name="same-rule",
+                mitre_tactic="Discovery",
+                event_count=4,
+                entities=shared,
+                asset=SANDBOX,
+            ),
+        ]
+    )[0]
+    b, _ = score_threat_fidelity(incident)
+    combined = fidelity_a(
+        severity_raw="Medium",
+        confidence=0.7,
+        false_positive_rate=0.2,
+        event_count=8,
+    )
+    assert abs(b - combined) < 1e-9
+    assert b < 2 * fidelity_a(
+        severity_raw="Medium",
+        confidence=0.7,
+        false_positive_rate=0.2,
+        event_count=4,
+    )
+
+
+def test_fidelity_is_capped_at_35() -> None:
+    alerts = [
+        _alert(
+            alert_id=f"C{i}",
+            timestamp=T0,
+            rule_name=f"rule-{i}",
+            severity_raw="Critical",
+            confidence=1.0,
+            false_positive_rate=0.0,
+            mitre_tactic="Impact" if i % 2 else "Exfiltration",
+            mitre_technique=f"T{i}",
+            entities=AlertEntities(host_id="host-pci-db-01", user_id="u-maria-chen"),
+            asset=CROWN,
+            identity=FINANCE_USER,
+        )
+        for i in range(8)
+    ]
+    incident = correlate_alerts(alerts)[0]
+    b, evidence = score_threat_fidelity(incident)
+    assert b == 35.0
+    assert any("capped" in line for line in evidence)
+
+
+def test_kill_chain_progression_formula() -> None:
+    k, _ = score_progression(_breach_incident())
+    # 5 tactics, 4 sensors, Exfiltration present
+    assert k == 1.0 + 0.35 * 4 + 0.20 * 3 + 0.50
+    scanner_k, _ = score_progression(_scanner_incident())
+    assert scanner_k == 1.0
+
+
+def test_asset_and_identity_use_spec_tables() -> None:
+    breach = _breach_incident()
+    asset, _ = score_business_impact(breach)
+    # prod 1.4, crown jewel 2.0, crit 5 → 2.0
+    expected = 0.35 * 1.4 + 0.35 * 2.0 + 0.30 * 2.0
+    assert abs(asset - expected) < 1e-9
+    scanner_asset, _ = score_business_impact(_scanner_incident())
+    assert 0.4 <= scanner_asset <= 0.5
+    priv, _ = score_privilege(breach)
+    assert priv == 0.5
+    no_id, _ = score_privilege(_scanner_incident())
+    assert no_id == 0.5
 
 
 def test_naive_siem_score_sums_raw_severity_weights() -> None:

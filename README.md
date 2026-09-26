@@ -42,7 +42,7 @@ data/generate_synthetic_data.py   Seeded CMDB, IAM, and alert stream
 engine/schemas.py                 Pydantic v2 models
 engine/normalizer.py              Vendor-field mapping, CMDB/IAM enrich, dedup
 engine/correlator.py              Entity + time union-find (no scenario_id)
-engine/risk_scorer.py             Weighted risk + traceable attribution
+engine/risk_scorer.py             B × K × I risk + traceable attribution
 engine/explainer.py               Deterministic cards; optional LLM prose
 engine/pipeline.py                End-to-end run + fatigue metrics
 app.py                            Interactive SOC queue
@@ -67,24 +67,33 @@ streamlit run app.py
 
 ## Risk formula
 
-Six bounded drivers, weights that sum to 1.0, then a noise discount that can only reduce the score:
+The score is computed on **deduplicated, correlated incidents**, never on raw SIEM rows:
 
 ```text
-raw  = Σ w_i * s_i
-risk = 100 * raw * (1 - 0.45 * noise)
+fidelity_a = severity_weight × confidence × (1 - 0.7 × FPR)
+             × (1 + 0.10 × log1p(event_count - 1))
 
-contribution_pct_i = 100 * (w_i * s_i) / raw
+B = min(Σ fidelity_a over unique (rule_name, mitre_tactic), 35)
+
+K = 1 + 0.35×max(0, m-1) + 0.20×max(0, s-1)
+    + 0.50×int(Exfiltration ∈ tactics or Impact ∈ tactics)
+
+asset_score = 0.35×env + 0.35×data + 0.30×criticality   (≈ 0.4–2.0)
+P_priv      = highest involved privilege weight
+I           = asset_score × P_priv
+
+risk = min(100, B × K × I × (1 - 0.45 × noise))
 ```
 
-| Driver | Weight | What it measures |
-| --- | --- | --- |
-| Business impact | 0.28 | Environment, data sensitivity, criticality |
-| Identity privilege | 0.14 | IAM tier (domain admin … standard user) |
-| Attack progression | 0.26 | Unique ATT&CK tactics, late-stage presence, kill-chain span, sensors |
-| Signal quality | 0.16 | `confidence × (1 − FPR)`, plus corroboration |
-| Blast radius | 0.10 | Distinct hosts and identities |
-| Severity residual | 0.06 | Vendor severity is kept, but cannot dominate |
-| Noise discount | cap 0.45 | Bursty, high-FPR, single-stage piles (scanners) |
+| Factor | What it measures |
+| --- | --- |
+| Threat fidelity **B** | Vendor severity × confidence × (1 − 0.7×FPR), unique (rule, tactic) only, log volume |
+| Kill-chain **K** | Distinct ATT&CK tactics, distinct sensors, Exfiltration/Impact completion |
+| Asset impact | Highest-risk touched asset (`sandbox` 0.4 … `prod` 1.4; `public` 0.5 … `crown_jewel_pii_pci` 2.0) |
+| Identity **P_priv** | Highest-risk identity (`standard_user` 0.5 … `tier_0_domain_admin` 1.8) |
+| Noise discount | cap 0.45; bursty, high-FPR, single-stage piles (scanners) |
+
+Volume has strongly diminishing returns. 120 identical Critical alerts are not 120 attack stages.
 
 Given the same dataset and `config.py`, ranking, scores, and attribution percentages are identical every run.
 
@@ -109,7 +118,7 @@ The normalizer parses JSONL, canonicalizes timestamps and IPs, resolves host IP 
 - Correlation: NetworkX `MultiGraph`. Edges are `SHARED_HOST`, `SHARED_IDENTITY`, `SHARED_ATTACKER_IP`, `DESTINATION_PIVOT`, `HOST_IP_PIVOT`, `PROCESS_HASH`, each with `time_delta_minutes` and `correlation_strength`.
 - Two alerts join only if they are within **4 hours** and have at least one meaningful relationship.
 - DNS/proxy/NAT/LB/jump/DHCP/scanner infrastructure and high-fanout attacker IPs cannot weld unrelated hosts. Components over 25 nodes are split on strong edges, then time gaps.
-- Volume has strongly diminishing returns (`1 + log2(n)/10`). 120 identical alerts are not 120 attack stages.
+- Volume has strongly diminishing returns (`1 + 0.10 × log1p(n − 1)`). 120 identical alerts are not 120 attack stages.
 - Naive SIEM score: `Σ SEVERITY_WEIGHTS[raw_alert]` with Low=2, Medium=5, High=10, Critical=15. **No dedup.** `naive_siem_rank` is that descending order.
 
 ## Tests
