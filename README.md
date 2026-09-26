@@ -137,7 +137,7 @@ LLM_PROVIDER=gemini
 GEMINI_API_KEY=...
 ```
 
-The model receives only a structured incident payload (IDs, timestamps, entities, CMDB/IAM, ATT&CK, edges, score, attribution, naive rank, AI rank). It must not invent facts, change `risk_score` / ranks, or rewrite attribution percents. Every returned timeline step is checked for a real `[alert_id]`. If no key is set or the call fails, the deterministic Python card is used unchanged.
+The model receives only a structured incident payload (IDs, timestamps, entities, CMDB/IAM, ATT&CK, edges, score, attribution, naive rank, AI rank). It must not invent facts, change `risk_score` / ranks, or rewrite attribution percents. Every returned timeline step is checked for a real `[alert_id]`. Each prose field must also pass Flesch Reading Ease >= 70 after identifiers are ignored for scoring. Failed or hard-to-read LLM text falls back to the deterministic card. If no key is set or the call fails, that same Python card is used unchanged.
 
 ## Mandatory scenarios
 
