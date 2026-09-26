@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
-from config import KILL_CHAIN, RISK_SCALE
+from config import BLAST_ASSET_WEIGHT, BLAST_IDENTITY_WEIGHT, FIDELITY_CAP, KILL_CHAIN, RISK_SCALE
 from engine.presentation import (
     PRIVILEGED_TIERS,
     context_badges,
@@ -781,6 +781,17 @@ def _cell(report: IncidentReportModel, value: object) -> str:
     return _show(report, value).replace("|", "\\|").replace("\n", " ")
 
 
+def _stacked_formula(calc: RiskCalculationDetails) -> list[str]:
+    """One equation per line. The engine stores these as a single comma-joined string."""
+    return [
+        f"risk_score = 100 × (1 − exp(−RawRisk / {calc.scale:.0f}))",
+        "RawRisk    = B × K × C",
+        f"B          = min(Σ fidelity_a over unique (rule, tactic), {FIDELITY_CAP:.0f})",
+        "K          = 1 + 0.35×max(0, m-1) + 0.20×max(0, s-1) + 0.50×completion",
+        f"C          = {BLAST_ASSET_WEIGHT:.2f}×asset_risk + {BLAST_IDENTITY_WEIGHT:.2f}×P_priv",
+    ]
+
+
 def _md_table(headers: list[str], rows: list[list[str]], align: list[str] | None = None) -> list[str]:
     if not rows:
         return []
@@ -1033,19 +1044,29 @@ def render_report_markdown(report: IncidentReportModel) -> str:
             "",
             "## A. Risk calculation",
             "",
-            calc.formula,
-            "",
-            f"RawRisk = B × K × C = {calc.raw_risk:.3f}",
-            f"B = {calc.fidelity_b:.3f}",
-            f"K = {calc.progression_k:.3f}",
-            f"C = {calc.blast_c:.3f}",
-            f"asset_risk = {calc.asset_risk:.3f}",
-            f"identity_risk = {calc.identity_risk:.3f}",
-            f"risk_score = {calc.risk_score:.3f}",
-            f"normalization scale = {calc.scale:.0f}",
+            "```text",
+            *_stacked_formula(calc),
+            "```",
             "",
         ]
     )
+    lines.extend(
+        _md_table(
+            ["Term", "Value", "Meaning"],
+            [
+                ["**RawRisk**", f"{calc.raw_risk:.3f}", "B × K × C"],
+                ["**B**", f"{calc.fidelity_b:.3f}", "Alert fidelity"],
+                ["**K**", f"{calc.progression_k:.3f}", "Kill-chain progression"],
+                ["**C**", f"{calc.blast_c:.3f}", "Blast radius"],
+                ["**asset_risk**", f"{calc.asset_risk:.3f}", "Host / data sensitivity"],
+                ["**identity_risk**", f"{calc.identity_risk:.3f}", "Account privilege"],
+                ["**risk_score**", f"{calc.risk_score:.3f}", "Saturating map of RawRisk"],
+                ["**scale**", f"{calc.scale:.0f}", "Normalization constant"],
+            ],
+            align=["left", "right", "left"],
+        )
+    )
+    lines.append("")
     if calc.noise_note:
         lines.extend([f"FPR comparison: {show(calc.noise_note)}", ""])
     lines.extend(

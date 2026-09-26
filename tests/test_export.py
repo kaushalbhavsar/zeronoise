@@ -161,10 +161,15 @@ def test_case_markdown_matches_workspace_context() -> None:
     assert "not a confidence" in text.lower() or "not a confidence percentage" in text
     assert "History is not invented" not in text
     assert "# Technical appendix" in text
-    assert item.risk.formula in text
-    first_formula = text.find(item.risk.formula)
+    assert "```text" in text
+    assert "risk_score = 100 × (1 − exp(−RawRisk / 45))" in text
+    assert "RawRisk    = B × K × C" in text
+    assert item.risk.formula not in text
+    first_formula = text.find("## A. Risk calculation")
     first_rank = text.find("Why ZeroNoise ranked this")
     assert 0 <= first_rank < first_formula
+    assert "| **RawRisk** |" in text
+    assert "| **B** |" in text
 
 
 def test_case_markdown_does_not_invent_history() -> None:
@@ -205,7 +210,8 @@ def test_ransomware_report_is_readable_decision_first() -> None:
     assert "Immediate action" in text
     assert "What happened" in text
     assert "Why it matters" in text
-    assert "RawRisk" in text
+    assert "RawRisk    = B × K × C" in text
+    assert "RawRisk = B × K × C =" not in text
     assert text.find("## Decision brief") < text.find("# Technical appendix")
     assert text.find("## Decision brief") < text.find("## A. Risk calculation")
     assert "definitely malicious" not in text.lower()
