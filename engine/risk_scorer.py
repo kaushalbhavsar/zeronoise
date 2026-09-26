@@ -27,6 +27,7 @@ from config import (
     RISK_WEIGHTS,
     SENSITIVITY_SCORE,
     SEVERITY_RANK,
+    SEVERITY_WEIGHTS,
 )
 from engine.schemas import (
     Asset,
@@ -179,30 +180,38 @@ def score_severity(incident: CandidateIncident) -> tuple[float, list[str]]:
     return value, [f"max vendor severity={incident.max_severity} ({value:.2f})"]
 
 
+def diminishing_volume(event_count: int) -> float:
+    """Strongly diminishing return for identical burst copies.
+
+    1 event → 1.00, 2 → 1.10, 8 → 1.30, 120 → 1.69. Never linear in volume.
+    """
+    return 1.0 + math.log2(max(1, event_count)) / 10.0
+
+
 def score_noise(incident: CandidateIncident) -> tuple[float, list[str]]:
     """High when a bursty, high-FPR, single-stage incident is just noise."""
     events = max(1, incident.total_event_count)
-    burst = math.log1p(events) / math.log1p(200)
+    stages = max(1, len(incident.unique_techniques))
+    burst = math.log1p(events) / math.log1p(40)
     burst = _clip01(burst)
     mean_fpr = sum(a.false_positive_rate * a.event_count for a in incident.alerts) / events
     progression, _ = score_progression(incident)
-    # Progression suppresses the noise penalty: a real campaign that happens
-    # to generate many events is not treated like a scanner.
-    value = burst * mean_fpr * (1.0 - 0.85 * progression)
+    # Volume that is not new stages is treated as repetition, not evidence.
+    repetition = 1.0 - min(1.0, stages / max(1.0, math.log2(events) + 1.0))
+    value = burst * mean_fpr * (1.0 - 0.85 * progression) * (0.55 + 0.45 * repetition)
     evidence = [
-        f"event_count={events} burst={burst:.3f}",
+        f"event_count={events} saturated_volume={diminishing_volume(events):.2f}",
+        f"distinct techniques/stages={stages} (volume is not a stage count)",
         f"mean FPR={mean_fpr:.3f}",
         f"progression dampener={progression:.3f}",
     ]
     return _clip01(value), evidence
 
 
-def _legacy_score(incident: CandidateIncident) -> float:
-    """Vendor-severity-and-volume ranking used by a typical SIEM queue."""
-    return (
-        1000.0 * SEVERITY_RANK[incident.max_severity]
-        + 10.0 * len(incident.alerts)
-        + float(incident.total_event_count)
+def naive_siem_score(incident: CandidateIncident) -> float:
+    """Deliberately naive: sum raw-alert severity weights. No dedup credit."""
+    return float(
+        sum(SEVERITY_WEIGHTS[alert.severity_raw] * alert.event_count for alert in incident.alerts)
     )
 
 
@@ -293,7 +302,7 @@ def score_incident(incident: CandidateIncident) -> ScoredIncident:
     return ScoredIncident(
         incident=incident,
         risk=breakdown,
-        legacy_score=round(_legacy_score(incident), 3),
+        legacy_score=round(naive_siem_score(incident), 3),
         title=_title(incident),
     )
 
@@ -301,6 +310,14 @@ def score_incident(incident: CandidateIncident) -> ScoredIncident:
 def score_incidents(incidents: Iterable[CandidateIncident]) -> list[ScoredIncident]:
     scored = [score_incident(incident) for incident in incidents]
     scored.sort(key=lambda item: (-item.risk.risk_score, item.incident.incident_id))
+    legacy_order = sorted(
+        scored, key=lambda item: (-item.legacy_score, item.incident.incident_id)
+    )
+    ranks = {
+        item.incident.incident_id: idx for idx, item in enumerate(legacy_order, start=1)
+    }
+    for item in scored:
+        item.naive_siem_rank = ranks[item.incident.incident_id]
     return scored
 
 

@@ -189,8 +189,9 @@ if __name__ == "__main__":
         print(
             f"    {idx}. {item.risk.risk_score:6.1f}  {item.incident.incident_id}  {item.title}"
         )
-    print("  legacy SIEM queue (top 5)")
+    print("  naive SIEM queue (top 5)")
     for idx, item in enumerate(result.legacy_ranked[:5], start=1):
         print(
-            f"    {idx}. {item.legacy_score:8.1f}  {item.incident.incident_id}  {item.title}"
+            f"    {idx}. naive={item.legacy_score:8.1f}  rank={item.naive_siem_rank}  "
+            f"{item.incident.incident_id}  {item.title}"
         )

@@ -20,8 +20,30 @@ ALERTS_PATH = DATA_DIR / "sample_alerts.jsonl"
 # Dedup: same rule + same primary entities inside this window collapse.
 DEDUP_WINDOW_MINUTES = 15
 
-# Correlation: shared resolved entities within this window form an incident.
-CORRELATION_WINDOW_MINUTES = 120
+# Correlation: two alerts may join only if they are within this window
+# and share a meaningful relationship.
+CORRELATION_WINDOW_MINUTES = 4 * 60
+
+# Connected components larger than this are inspected and possibly split.
+MAX_COMPONENT_NODES = 25
+
+# A source IP that fans out to this many distinct hosts is treated as a
+# scanner and cannot weld those hosts into one compromise by IP alone.
+SCANNER_FANOUT_HOSTS = 8
+
+# Drop these edge strengths when splitting a mega-component.
+STRONG_EDGE_THRESHOLD = 0.80
+
+# Temporal split gap used after a mega-component survives strong-edge filtering.
+TEMPORAL_SPLIT_GAP_MINUTES = 90
+
+# Naive SIEM score: sum of these weights over every raw alert (no dedup).
+SEVERITY_WEIGHTS: dict[str, int] = {
+    "Low": 2,
+    "Medium": 5,
+    "High": 10,
+    "Critical": 15,
+}
 
 # Generic destinations that must never join otherwise-unrelated alerts.
 GENERIC_IPS = frozenset(
@@ -34,6 +56,26 @@ GENERIC_IPS = frozenset(
         "9.9.9.9",
         "255.255.255.255",
     }
+)
+
+# Tokens that mark high-frequency infrastructure. Joins that only share
+# these hosts are low-confidence and get dropped from mega-components.
+INFRA_HOST_TOKENS: tuple[str, ...] = (
+    "dns",
+    "proxy",
+    "nat",
+    "lb-",
+    "-lb",
+    "loadbal",
+    "load-bal",
+    "jump",
+    "dhcp",
+    "scanner",
+    "nessus",
+    "qualys",
+    "vpn-gw",
+    "firewall",
+    "waf-vip",
 )
 
 # Additive risk weights. Must sum to 1.0 so attribution is a partition

@@ -42,13 +42,23 @@ def test_burst_of_identical_alerts_collapses_and_sums_events() -> None:
     collapsed = deduplicate_alerts(alerts, window_minutes=15)
     assert len(collapsed) == 1
     assert collapsed[0].event_count == 10
-    assert set(collapsed[0].member_alert_ids) == {f"A{i}" for i in range(10)}
+    assert set(collapsed[0].original_alert_ids) == {f"A{i}" for i in range(10)}
+    assert collapsed[0].first_seen == alerts[0].timestamp
+    assert collapsed[0].last_seen == alerts[-1].timestamp
 
 
 def test_alerts_outside_window_stay_separate() -> None:
     alerts = [_alert("A0", 0), _alert("A1", 20)]
     collapsed = deduplicate_alerts(alerts, window_minutes=15)
     assert len(collapsed) == 2
+
+
+def test_rolling_window_extends_from_last_seen() -> None:
+    alerts = [_alert("A0", 0), _alert("A1", 14), _alert("A2", 28)]
+    collapsed = deduplicate_alerts(alerts, window_minutes=15)
+    assert len(collapsed) == 1
+    assert collapsed[0].event_count == 3
+    assert collapsed[0].original_alert_ids == ["A0", "A1", "A2"]
 
 
 def test_different_rules_do_not_merge() -> None:

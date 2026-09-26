@@ -213,7 +213,7 @@ def main() -> None:
             render_queue_table(result.risk_ranked[:8], "risk")
         with right:
             st.subheader("Legacy SIEM ranking")
-            st.caption("max(vendor severity) × 1000 + 10 × alerts + events")
+            st.caption("naive_score = Σ SEVERITY_WEIGHTS[raw_alert]  (no dedup; Critical=15)")
             render_queue_table(result.legacy_ranked[:8], "legacy")
         st.plotly_chart(comparison_chart(result), width="stretch")
         if metrics.ranking_inverted:
@@ -274,16 +274,34 @@ def main() -> None:
                     st.write(f"- {line}")
             st.markdown("**Deduplicated alert IDs**")
             st.code("\n".join(card.alert_ids))
+            if card.edges:
+                st.markdown("**Correlation edges**")
+                st.dataframe(
+                    [
+                        {
+                            "from": edge.source_alert_id,
+                            "to": edge.target_alert_id,
+                            "relationship": edge.relationship_type,
+                            "delta_min": edge.time_delta_minutes,
+                            "strength": edge.correlation_strength,
+                        }
+                        for edge in card.edges
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
             st.markdown("**Timeline**")
             timeline = [
                 {
-                    "time": alert.timestamp.isoformat(),
+                    "first_seen": (alert.first_seen or alert.timestamp).isoformat(),
+                    "last_seen": (alert.last_seen or alert.timestamp).isoformat(),
                     "id": alert.alert_id,
                     "product": alert.source_product,
                     "severity": alert.severity_raw,
                     "tactic": alert.mitre_tactic,
                     "rule": alert.rule_name,
                     "events": alert.event_count,
+                    "original_alert_ids": ",".join(alert.original_alert_ids or alert.member_alert_ids),
                 }
                 for alert in scored.incident.alerts
             ]
