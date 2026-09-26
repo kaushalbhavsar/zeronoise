@@ -63,7 +63,7 @@ pytest -q
 streamlit run app.py
 ```
 
-The Streamlit app compares the two queues, opens an incident card with driver attribution, and reports fatigue reduction.
+`streamlit run app.py` opens the SOC console: a filterable incident queue, case ownership/status, and an investigation workbench (timeline, ATT&CK, risk drivers, containment, evidence). Queue order can be switched between risk and SIEM volume.
 
 ## Risk formula
 
