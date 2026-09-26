@@ -335,9 +335,9 @@ def attack_timeline(scored: ScoredIncident) -> list[str]:
             target = f" for {who}"
         elif host:
             target = f" on {host}"
-        clock = _utc_clock(alert.first_seen or alert.timestamp)
+        clock = (alert.first_seen or alert.timestamp).astimezone(timezone.utc).strftime("%H:%M")
         lines.append(
-            f"[{alert.alert_id}] {clock} — {alert.rule_name}{target}."
+            f"{clock}  [{alert.alert_id}] {alert.mitre_tactic} — {alert.rule_name}{target}"
         )
     return lines
 

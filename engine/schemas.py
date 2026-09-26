@@ -203,6 +203,7 @@ class ScoredIncident(BaseModel):
     risk: RiskBreakdown
     legacy_score: float
     naive_siem_rank: int | None = None
+    risk_rank: int | None = None
     title: str
 
 
@@ -277,6 +278,7 @@ class PipelineMetrics(BaseModel):
     dropped_alert_count: int = 0
     missing_context_alert_count: int = 0
     ranking_inverted: bool = False
+    high_priority_count: int = 0
 
 
 class PipelineResult(BaseModel):

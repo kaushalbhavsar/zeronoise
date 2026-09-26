@@ -44,8 +44,9 @@ engine/normalizer.py              Vendor-field mapping, CMDB/IAM enrich, dedup
 engine/correlator.py              Entity + time union-find (no scenario_id)
 engine/risk_scorer.py             B × K × C risk + ablation attribution
 engine/explainer.py               Deterministic cards; optional OpenAI/Gemini prose
-engine/pipeline.py                End-to-end run + fatigue metrics
-app.py                            Interactive SOC queue
+engine/pipeline.py                load→…→score→rank→explain
+engine/presentation.py            Badges, rank delta, correlation sentences
+app.py                            SOC queue + investigation workbench
 tests/                            Dedup, correlation, scoring, acceptance
 ```
 
@@ -63,7 +64,7 @@ pytest -q
 streamlit run app.py
 ```
 
-`streamlit run app.py` opens the SOC console: a filterable incident queue, case ownership/status, and an investigation workbench (timeline, ATT&CK, risk drivers, containment, evidence). Queue order can be switched between risk and SIEM volume.
+`streamlit run app.py` opens the SOC console. The top row is Raw Alerts → Deduplicated Events → Correlated Incidents → High-Priority Incidents, plus alert-fatigue reduction (`300 raw → N reviewable`). Queue order toggles **AI Risk-Based Triage** vs **Legacy SIEM Triage** and reorders the same incidents. Each case shows risk score, AI rank, legacy rank, rank delta, context badges (from CMDB/IAM/ATT&CK, never `scenario_id`), ablation drivers, a cited timeline, and why the alerts were grouped.
 
 ## Risk formula
 
@@ -114,7 +115,7 @@ Every card answers six questions from incident facts only:
 | How did the attack evolve? | `attack_timeline` |
 | What should the SOC do now? | `recommended_actions` |
 
-Each timeline line cites a real alert ID, for example `[ALRT-A-001] 02:10 UTC — Anomalous VPN login for usr_svc_deploy on prd-app-02.` The explainer never invents alert IDs, hosts, users, techniques, IPs, or timestamps. False-positive wording stays uncertain (`unlikely to be isolated noise`), never `definitely malicious`.
+Each timeline line is chronological and cites a real alert ID, for example `09:12  [ALRT-A-001] Initial Access — Anomalous VPN login for usr_svc_deploy on prd-app-02`. The explainer never invents alert IDs, hosts, users, techniques, IPs, or timestamps. False-positive wording stays uncertain (`unlikely to be isolated noise`), never `definitely malicious`.
 
 ## LLM contract
 
