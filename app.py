@@ -22,6 +22,7 @@ from engine.presentation import (
     driver_rows,
     rank_delta,
     rank_delta_label,
+    raw_alert_ids,
 )
 from engine.schemas import IncidentCard, PipelineResult, ScoredIncident
 
@@ -493,44 +494,17 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
             key=f"status-{item.incident.incident_id}",
         )
 
-    overview, timeline, attack, risk, response, evidence = st.tabs(
-        ["Overview", "Timeline", "ATT&CK", "Risk", "Response", "Evidence"]
-    )
+    st.caption("Case file — expand a section to drill in.")
 
-    with overview:
-        st.markdown("**What happened?**")
+    with st.expander("Executive Summary", expanded=True):
         st.write(card.executive_summary)
-        e1, e2, e3 = st.columns(3)
-        with e1:
-            st.markdown("**Identities**")
-            if card.identities:
-                for ident in card.identities:
-                    st.write(
-                        f"{ident.user_id} · {ident.department} · {ident.privilege_tier}"
-                    )
-            else:
-                st.write(primary_user(item))
-        with e2:
-            st.markdown("**Assets**")
-            if card.assets:
-                for asset in card.assets:
-                    st.write(
-                        f"{asset.hostname} · {asset.environment} · "
-                        f"{asset.data_sensitivity} · crit {asset.business_criticality}"
-                    )
-            else:
-                st.write(primary_asset(item))
-        with e3:
-            st.markdown("**Sensors**")
-            st.write(", ".join(card.products) or "—")
-            st.markdown("**Class**")
-            st.write(classify(item))
         if card.contrastive_explanation or card.contrastive:
             st.markdown("**Why the legacy SIEM got this wrong**")
             st.write(card.contrastive_explanation or card.contrastive)
         if card.why_not_false_positive:
             st.markdown("**Why this may be real rather than noise**")
             st.write(card.why_not_false_positive)
+        st.caption(f"Sensors: {', '.join(card.products) or '—'}  ·  Class: {classify(item)}")
 
     with timeline:
         st.markdown("**How the attack evolved**")
@@ -584,54 +558,110 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
                 key=f"risk-drivers-{item.incident.incident_id}",
             )
         with right:
-            st.markdown("**Why is it ranked here?**")
             for driver in driver_rows(card):
                 st.write(f"**{driver_label(driver.factor)}** · {driver.contribution_pct}%")
                 if driver.evidence:
                     st.caption(driver.evidence)
-        if card.why_not_false_positive:
-            st.caption(card.why_not_false_positive)
         st.caption(
             f"SIEM rank #{item.naive_siem_rank} uses raw severity×volume only. "
             "It is not used for this queue's default order."
         )
 
-    with response:
-        st.markdown("**What should the SOC do now?**")
-        for action in card.containment:
-            checked = action in record["done"]
-            if st.checkbox(action, value=checked, key=f"act-{item.incident.incident_id}-{hash(action)}"):
-                if action not in record["done"]:
-                    record["done"].append(action)
-            elif action in record["done"]:
-                record["done"].remove(action)
-        record["notes"] = st.text_area(
-            "Case notes",
-            value=record["notes"],
-            height=140,
-            key=f"notes-{item.incident.incident_id}",
+    with st.expander("Affected Assets", expanded=True):
+        if card.assets:
+            st.dataframe(
+                [
+                    {
+                        "Host": asset.host_id,
+                        "Hostname": asset.hostname,
+                        "Env": asset.environment,
+                        "Data": asset.data_sensitivity,
+                        "Crit": asset.business_criticality,
+                        "IP": asset.ip_address,
+                    }
+                    for asset in card.assets
+                ],
+                width="stretch",
+                hide_index=True,
+                key=f"assets-{item.incident.incident_id}",
+            )
+        else:
+            st.write(primary_asset(item))
+
+    with st.expander("Affected Identities", expanded=True):
+        if card.identities:
+            st.dataframe(
+                [
+                    {
+                        "User": ident.user_id,
+                        "Department": ident.department,
+                        "Privilege": ident.privilege_tier,
+                    }
+                    for ident in card.identities
+                ],
+                width="stretch",
+                hide_index=True,
+                key=f"idents-{item.incident.incident_id}",
+            )
+        else:
+            st.write(primary_user(item))
+
+    with st.expander("MITRE Tactics", expanded=True):
+        st.markdown(kill_chain_html(card.tactics), unsafe_allow_html=True)
+        st.write(" → ".join(card.tactics) if card.tactics else "No mapped tactics.")
+        st.plotly_chart(
+            kill_chain_figure(card.tactics, chart_id=f"attack-{item.incident.incident_id}"),
+            width="stretch",
+            key=f"kill-chain-attack-{item.incident.incident_id}",
         )
 
-    with evidence:
-        ev1, ev2 = st.columns(2)
-        with ev1:
-            st.markdown("**Correlated alerts**")
-            st.code("\n".join(card.alert_ids) or "—")
-        with ev2:
-            st.markdown("**Source events**")
-            originals = []
-            for alert in item.incident.alerts:
-                originals.extend(alert.original_alert_ids or alert.member_alert_ids or [alert.alert_id])
-            st.caption(f"{len(originals)} raw alert IDs after burst collapse")
-            st.code("\n".join(originals[:40]) + ("\n…" if len(originals) > 40 else ""))
+    with st.expander("MITRE Techniques", expanded=True):
+        techniques = item.incident.unique_techniques or card.techniques
+        if techniques:
+            for technique in techniques:
+                st.write(f"- {technique}")
+        else:
+            st.write("No mapped techniques.")
+
+    with st.expander("Attack Timeline", expanded=True):
+        late = {"Exfiltration", "Impact", "Lateral Movement", "Credential Access"}
+        for line in card.attack_timeline:
+            late_cls = "tl-late" if any(tactic in line for tactic in late) else ""
+            st.markdown(
+                f"<div class='tl-line {late_cls}'>{_format_timeline_line(line)}</div>",
+                unsafe_allow_html=True,
+            )
+        st.dataframe(
+            [
+                {
+                    "Alert": alert.alert_id,
+                    "Start": fmt_ts(alert.first_seen or alert.timestamp),
+                    "End": fmt_ts(alert.last_seen or alert.timestamp),
+                    "Sensor": alert.source_product,
+                    "Sev": alert.severity_raw,
+                    "Tactic": alert.mitre_tactic,
+                    "Rule": alert.rule_name,
+                    "Events": alert.event_count,
+                    "User": alert.entities.user_id or "—",
+                    "Host": alert.entities.host_id or "—",
+                }
+                for alert in item.incident.alerts
+            ],
+            width="stretch",
+            hide_index=True,
+            key=f"timeline-alerts-{item.incident.incident_id}",
+        )
+
+    with st.expander("Correlation Evidence", expanded=True):
         reasons = correlation_evidence(item)
         if reasons:
             st.markdown("**Why were these alerts grouped?**")
             for row in reasons:
                 st.write(f"`{row['from']}` → `{row['to']}`")
                 st.caption(row["reason"])
+        else:
+            st.write("Single-alert incident — no inter-alert edges.")
         if card.edges:
-            st.markdown("**Correlation graph**")
             st.dataframe(
                 [
                     {
@@ -647,6 +677,38 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
                 hide_index=True,
                 key=f"evidence-edges-{item.incident.incident_id}",
             )
+
+    originals = raw_alert_ids(item)
+    with st.expander("Raw Alert References", expanded=True):
+        st.caption(
+            f"{len(originals)} raw alert IDs collapsed into "
+            f"{len(item.incident.alerts)} deduplicated events"
+        )
+        st.code("\n".join(originals[:60]) + ("\n…" if len(originals) > 60 else "") or "—")
+        st.markdown("**Deduplicated survivors**")
+        st.code("\n".join(card.alert_ids) or "—")
+
+    recommended = card.recommended_actions or card.containment
+    with st.expander("Recommended Actions", expanded=True):
+        if not recommended:
+            st.write("No entity-specific actions were generated.")
+        for action in recommended:
+            checked = action in record["done"]
+            if st.checkbox(
+                action,
+                value=checked,
+                key=f"act-{item.incident.incident_id}-{hash(action)}",
+            ):
+                if action not in record["done"]:
+                    record["done"].append(action)
+            elif action in record["done"]:
+                record["done"].remove(action)
+        record["notes"] = st.text_area(
+            "Case notes",
+            value=record["notes"],
+            height=140,
+            key=f"notes-{item.incident.incident_id}",
+        )
 
 
 def main() -> None:
