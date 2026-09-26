@@ -6,6 +6,8 @@ sentences are produced from CMDB/IAM/ATT&CK/edges only.
 
 from __future__ import annotations
 
+from datetime import timezone
+
 from engine.schemas import EnrichedAlert, GraphEdge, IncidentCard, RiskDriver, ScoredIncident
 
 DRIVER_LABELS = {
@@ -200,6 +202,180 @@ def grouped_correlation_evidence(item: ScoredIncident) -> list[dict[str, object]
         if row["reason"] not in groups[pair]:
             groups[pair].append(row["reason"])
     return [{"from": left, "to": right, "reasons": groups[(left, right)]} for left, right in order]
+
+
+def _edge_fact(edge: GraphEdge, item: ScoredIncident) -> tuple[str, str]:
+    by_id = _alert_by_id(item)
+    left = by_id.get(edge.source_alert_id)
+    right = by_id.get(edge.target_alert_id)
+    if edge.relationship_type == "SHARED_IDENTITY":
+        return "Shared identity", _shared_user(left, right) or "—"
+    if edge.relationship_type == "SHARED_HOST":
+        return "Shared host", _shared_host(left, right) or "—"
+    if edge.relationship_type == "SHARED_ATTACKER_IP":
+        return "Shared source IP", _shared_ip(left, right) or "—"
+    if edge.relationship_type == "PROCESS_HASH":
+        return "Shared process hash", _shared_hash(left, right) or "—"
+    if edge.relationship_type == "DESTINATION_PIVOT":
+        dest = left.entities.dest_ip if left else None
+        return "Destination became source", dest or "—"
+    if edge.relationship_type == "HOST_IP_PIVOT":
+        dest = left.entities.dest_ip if left else None
+        return "Destination resolved to host", dest or "—"
+    return edge.relationship_type.replace("_", " ").title(), "—"
+
+
+def link_evidence(item: ScoredIncident) -> list[dict[str, object]]:
+    """Correlation collapsed onto the shared fact, not onto alert-id pairs."""
+    buckets: dict[tuple[str, str], set[str]] = {}
+    order: list[tuple[str, str]] = []
+    for edge in item.incident.edges:
+        kind, value = _edge_fact(edge, item)
+        key = (kind, value)
+        if key not in buckets:
+            buckets[key] = set()
+            order.append(key)
+        buckets[key].add(edge.source_alert_id)
+        buckets[key].add(edge.target_alert_id)
+    rows = []
+    for key in order:
+        kind, value = key
+        alert_ids = sorted(buckets[key])
+        rows.append(
+            {
+                "fact": kind,
+                "value": value,
+                "event_count": len(alert_ids),
+                "alert_ids": alert_ids,
+            }
+        )
+    rows.sort(key=lambda row: (-int(row["event_count"]), str(row["fact"]), str(row["value"])))
+    return rows
+
+
+def observable_evidence(item: ScoredIncident) -> dict[str, list[dict[str, object]]]:
+    """Observed artifacts that support the assessment. Alert IDs are citations, not the evidence."""
+    identities: dict[str, dict[str, object]] = {}
+    hosts: dict[str, dict[str, object]] = {}
+    network: dict[tuple[str, str], dict[str, object]] = {}
+    hashes: dict[str, dict[str, object]] = {}
+    detections: list[dict[str, object]] = []
+    gaps: list[str] = []
+
+    for alert in sorted(
+        item.incident.alerts,
+        key=lambda item_alert: (item_alert.first_seen or item_alert.timestamp, item_alert.alert_id),
+    ):
+        sensors = {alert.source_product}
+        if alert.identity or alert.entities.user_id:
+            user = (alert.identity.user_id if alert.identity else None) or alert.entities.user_id
+            if user:
+                row = identities.setdefault(
+                    user,
+                    {
+                        "identity": user,
+                        "department": alert.identity.department if alert.identity else "—",
+                        "privilege": alert.identity.privilege_tier if alert.identity else "unresolved",
+                        "sensors": set(),
+                        "tactics": set(),
+                    },
+                )
+                row["sensors"].update(sensors)
+                row["tactics"].add(alert.mitre_tactic)
+        for asset, role in ((alert.asset, "source"), (alert.dest_asset, "destination")):
+            host = None
+            if asset:
+                host = asset.host_id
+                row = hosts.setdefault(
+                    host,
+                    {
+                        "host": asset.host_id,
+                        "hostname": asset.hostname,
+                        "environment": asset.environment,
+                        "data": asset.data_sensitivity,
+                        "criticality": asset.business_criticality,
+                        "roles": set(),
+                        "sensors": set(),
+                    },
+                )
+                row["roles"].add(role)
+                row["sensors"].update(sensors)
+            elif role == "source" and alert.entities.host_id:
+                host = alert.entities.host_id
+                row = hosts.setdefault(
+                    host,
+                    {
+                        "host": host,
+                        "hostname": "—",
+                        "environment": "unresolved",
+                        "data": "unresolved",
+                        "criticality": "—",
+                        "roles": set(),
+                        "sensors": set(),
+                    },
+                )
+                row["roles"].add(role)
+                row["sensors"].update(sensors)
+        if alert.entities.src_ip:
+            row = network.setdefault(
+                ("source", alert.entities.src_ip),
+                {"direction": "source", "ip": alert.entities.src_ip, "sensors": set(), "gaps": set()},
+            )
+            row["sensors"].update(sensors)
+        if alert.entities.dest_ip:
+            row = network.setdefault(
+                ("destination", alert.entities.dest_ip),
+                {"direction": "destination", "ip": alert.entities.dest_ip, "sensors": set(), "gaps": set()},
+            )
+            row["sensors"].update(sensors)
+            if any(gap.startswith("unknown_dest_ip") for gap in alert.context_gaps):
+                row["gaps"].add("not in CMDB")
+        if alert.entities.process_hash:
+            row = hashes.setdefault(
+                alert.entities.process_hash,
+                {"hash": alert.entities.process_hash, "sensors": set(), "rules": set()},
+            )
+            row["sensors"].update(sensors)
+            row["rules"].add(alert.rule_name)
+        gaps.extend(alert.context_gaps)
+        detections.append(
+            {
+                "when": (alert.first_seen or alert.timestamp)
+                .astimezone(timezone.utc)
+                .strftime("%H:%M:%SZ"),
+                "sensor": alert.source_product,
+                "what_was_observed": alert.rule_name,
+                "tactic": alert.mitre_tactic,
+                "technique": alert.mitre_technique,
+                "vendor_severity": alert.severity_raw,
+                "identity": alert.entities.user_id or "—",
+                "host": alert.entities.host_id or "—",
+                "src_ip": alert.entities.src_ip or "—",
+                "dest_ip": alert.entities.dest_ip or "—",
+                "process_hash": alert.entities.process_hash or "—",
+                "raw_events": alert.event_count,
+                "alert_id": alert.alert_id,
+            }
+        )
+
+    def _freeze(rows: list[dict]) -> list[dict]:
+        frozen = []
+        for row in rows:
+            item_row = dict(row)
+            for key, value in list(item_row.items()):
+                if isinstance(value, set):
+                    item_row[key] = ", ".join(sorted(value)) if value else "—"
+            frozen.append(item_row)
+        return frozen
+
+    return {
+        "identities": _freeze(list(identities.values())),
+        "hosts": _freeze(list(hosts.values())),
+        "network": _freeze(list(network.values())),
+        "hashes": _freeze(list(hashes.values())),
+        "detections": detections,
+        "gaps": sorted(set(gaps)),
+    }
 
 
 ACTION_GROUPS = ("Validate", "Contain", "Preserve", "Recover")

@@ -33,6 +33,8 @@ def test_overview_is_default_workspace() -> None:
     titles = [item.value for item in at.title]
     markdown = " ".join(str(item.value) for item in at.markdown)
     assert any("Security overview" in str(value) for value in titles + [markdown])
+    assert "Highest-priority incidents" in markdown
+    assert "zn-heading" in markdown
     assert "fewer items to review" in markdown.lower() or any(
         "fewer items to review" in str(item.value).lower() for item in at.caption
     )
@@ -42,6 +44,10 @@ def test_queue_mode_does_not_raise() -> None:
     at = _queue()
     assert any("Open case" in button.label for button in at.button)
     assert not any("Back to queue" in button.label for button in at.button)
+    blob = " ".join(str(item.value) for item in at.markdown)
+    assert "Take next" in blob
+    assert "Working queue" in blob
+    assert "zn-heading" in blob
 
 
 def test_opening_case_replaces_queue_with_workspace() -> None:
@@ -65,6 +71,16 @@ def test_opening_case_replaces_queue_with_workspace() -> None:
     blob = " ".join(str(item.value) for item in at.markdown)
     blob += " ".join(str(item.value) for item in at.caption)
     assert "What happened?" in blob
+    assert "Decision brief" in blob
+    assert "Initial identity" in blob
+    assert "Chronology" in blob
+    assert "ATT&CK path" in blob
+    assert "Why this score" in blob
+    assert "Recommended work" in blob
+    assert "Detections" in blob
+    assert "Session activity" in blob
+    assert "zn-heading" in blob
+    assert "zn-kind" in blob
     assert "Why this incident ranks higher" in blob or any(
         "Why this incident ranks higher" in str(item.value) for item in at.markdown
     )
@@ -162,3 +178,6 @@ def test_intelligence_uses_volume_not_fatigue_copy() -> None:
     assert "fewer items to review" in blob.lower()
     assert "alert fatigue reduction" not in blob.lower()
     assert "Why the legacy SIEM got this wrong" not in blob
+    assert "AI rank vs legacy rank" in blob
+    assert "Significant rank changes" in blob
+    assert "zn-heading" in blob

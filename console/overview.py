@@ -16,8 +16,9 @@ from console.common import (
     primary_asset,
     priority,
     queue_metrics,
-    render_badges,
     render_load_error,
+    render_priority_card,
+    section,
     session_chrome,
     status_of,
 )
@@ -27,10 +28,9 @@ from console.state import (
     case,
     init_session,
     load_result_or_error,
-    open_case_view,
     snapshot_now,
 )
-from engine.presentation import incident_roles, review_reduction_label, urgency_sentence, vendor_severity
+from engine.presentation import review_reduction_label
 from engine.schemas import ScoredIncident
 
 
@@ -124,7 +124,7 @@ def render() -> None:
     with st.expander("Metric definitions"):
         st.write("Each metric help text states scope, time window, and calculation. Hover a metric label for the same definition.")
 
-    st.subheader("Highest-priority incidents")
+    section("Highest-priority incidents", "Action")
     urgent = [
         item
         for item in result.risk_ranked
@@ -137,26 +137,11 @@ def render() -> None:
         cols = st.columns(len(urgent), gap="medium")
         for col, item in zip(cols, urgent):
             with col:
-                pri = priority(item.risk.risk_score)
-                roles = incident_roles(item)
-                st.markdown(
-                    f"<div class='icard pri-{pri.lower()}'>"
-                    f"<div class='title'>{display(item.title, item)}</div>"
-                    f"<div class='meta'><span class='pri {pri.lower()}'>{pri}</span> "
-                    f"Risk {item.risk.risk_score:.0f} · vendor {vendor_severity(item)} · "
-                    f"{display(roles['affected_asset'], item)} · {owner_of(item)}</div>"
-                    f"<div class='urgency'>{display(urgency_sentence(item), item)}</div>"
-                    f"<div class='id'>{display(item.incident.incident_id, item)}</div>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-                render_badges(item, limit=3)
-                if st.button("Open case", key=f"ov-{item.incident.incident_id}", use_container_width=True):
-                    open_case_view(item.incident.incident_id, switch=True)
+                render_priority_card(item, now, key_prefix="ov", switch=True)
 
     left, right = st.columns([1.15, 0.85], gap="large")
     with left:
-        st.subheader("Affected services and assets")
+        section("Affected services and assets", "Observed")
         rows = _affected_rows(result.risk_ranked)
         if rows:
             st.dataframe(rows, width="stretch", hide_index=True, key="ov-assets")
@@ -164,11 +149,11 @@ def render() -> None:
             empty_state("no_assets", action="Open the queue to inspect lower-priority cases.")
         st.caption("Rows are observed CMDB assets on open high-priority incidents. No inferred dollar impact.")
     with right:
-        st.subheader("Response progress")
+        section("Response progress", "Session")
         st.dataframe(_progress_rows(result), width="stretch", hide_index=True, key="ov-progress")
         st.caption("Counts reflect local case state for this session. Closing a case here does not change the source snapshot.")
 
-    st.subheader("Open queue, risk order")
+    section("Open queue, risk order", "Observed")
     preview = [
         item
         for item in result.risk_ranked

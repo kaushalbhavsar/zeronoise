@@ -140,6 +140,15 @@ input:focus-visible, textarea:focus-visible {
 .case-header.pri-p3, .case-header.pri-p4 { border-left-color: #2a3b50; }
 .case-title { font-size: 1.35rem; font-weight: 650; color: var(--zn-text); margin: 0.2rem 0; }
 .case-meta { color: var(--zn-muted); font-size: 0.86rem; font-variant-numeric: tabular-nums; }
+.zn-kind {
+  font-size: 0.72rem; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--zn-muted); margin: 0 0 0.15rem 0;
+}
+.zn-heading {
+  font-size: 1.2rem; font-weight: 600; color: var(--zn-text);
+  letter-spacing: -0.01em; line-height: 1.3; margin: 0;
+}
+.zn-section { margin: 1.05rem 0 0.5rem 0; }
 .brief {
   background: var(--zn-panel); border: 1px solid var(--zn-border);
   border-radius: var(--zn-radius); padding: 1.1rem 1.2rem; margin: 0 0 0.7rem 0;
