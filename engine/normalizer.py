@@ -216,7 +216,10 @@ def normalize_raw(raw: dict | RawAlert) -> EnrichedAlert:
         entities=entities,
         event_count=max(1, payload.event_count),
         scenario_id=payload.scenario_id,
+        original_alert_ids=[alert_id],
         member_alert_ids=[alert_id],
+        first_seen=_as_dt(_pick(payload.timestamp, payload.time)),
+        last_seen=_as_dt(_pick(payload.timestamp, payload.time)),
     )
 
 
@@ -296,46 +299,70 @@ def _dedup_key(alert: EnrichedAlert) -> tuple[str, ...]:
     )
 
 
+def _seen(alert: EnrichedAlert) -> tuple[datetime, datetime]:
+    first = alert.first_seen or alert.timestamp
+    last = alert.last_seen or alert.timestamp
+    return first, last
+
+
 def deduplicate_alerts(
     alerts: Iterable[EnrichedAlert],
     window_minutes: int = DEDUP_WINDOW_MINUTES,
 ) -> list[EnrichedAlert]:
-    """Collapse same-rule, same-entity bursts inside the dedup window."""
+    """Collapse same-rule, same-entity bursts inside a rolling window.
+
+    A later identical alert joins the burst when it arrives within
+    `window_minutes` of that burst's last_seen. Volume is retained as
+    event_count and original_alert_ids so scoring can apply diminishing
+    returns instead of treating each copy as a new attack stage.
+    """
     ordered = sorted(alerts, key=lambda a: (a.timestamp, a.alert_id))
     buckets: dict[tuple[str, ...], list[EnrichedAlert]] = {}
+    window_seconds = window_minutes * 60
     for alert in ordered:
         key = _dedup_key(alert)
         family = buckets.setdefault(key, [])
         merged = False
-        window_seconds = window_minutes * 60
+        incoming_first, incoming_last = _seen(alert)
         for idx, existing in enumerate(family):
-            delta = abs((alert.timestamp - existing.timestamp).total_seconds())
-            if delta <= window_seconds:
-                members = list(existing.member_alert_ids or [existing.alert_id])
-                members.extend(alert.member_alert_ids or [alert.alert_id])
+            _first, last = _seen(existing)
+            delta = (incoming_first - last).total_seconds()
+            if 0 <= delta <= window_seconds or abs((incoming_first - last).total_seconds()) <= window_seconds:
+                members = list(existing.original_alert_ids or existing.member_alert_ids or [existing.alert_id])
+                members.extend(alert.original_alert_ids or alert.member_alert_ids or [alert.alert_id])
                 total = existing.event_count + alert.event_count
                 mean_fpr = (
                     existing.false_positive_rate * existing.event_count
                     + alert.false_positive_rate * alert.event_count
                 ) / total
+                first, prev_last = _seen(existing)
                 family[idx] = existing.model_copy(
                     update={
                         "event_count": total,
                         "confidence": max(existing.confidence, alert.confidence),
                         "false_positive_rate": min(1.0, mean_fpr),
+                        "original_alert_ids": members,
                         "member_alert_ids": members,
+                        "first_seen": min(first, incoming_first),
+                        "last_seen": max(prev_last, incoming_last),
                     }
                 )
                 merged = True
                 break
         if not merged:
+            ids = list(alert.original_alert_ids or alert.member_alert_ids or [alert.alert_id])
             family.append(
                 alert.model_copy(
-                    update={"member_alert_ids": list(alert.member_alert_ids or [alert.alert_id])}
+                    update={
+                        "original_alert_ids": ids,
+                        "member_alert_ids": ids,
+                        "first_seen": incoming_first,
+                        "last_seen": incoming_last,
+                    }
                 )
             )
     collapsed = [alert for family in buckets.values() for alert in family]
-    collapsed.sort(key=lambda a: (a.timestamp, a.alert_id))
+    collapsed.sort(key=lambda a: ((a.first_seen or a.timestamp), a.alert_id))
     return collapsed
 
 

@@ -204,7 +204,8 @@ def build_card(
         risk_score=scored.risk.risk_score,
         legacy_score=scored.legacy_score,
         risk_rank=risk_rank,
-        legacy_rank=legacy_rank,
+        legacy_rank=legacy_rank if legacy_rank is not None else scored.naive_siem_rank,
+        naive_siem_rank=scored.naive_siem_rank if scored.naive_siem_rank is not None else legacy_rank,
         first_seen=inc.first_seen,
         last_seen=inc.last_seen,
         alert_count=len(inc.alerts),
@@ -222,6 +223,7 @@ def build_card(
         contrastive=contrastive_explanation(scored, contrast_with),
         risk=scored.risk,
         alert_ids=list(inc.alert_ids),
+        edges=list(inc.edges),
         llm_enhanced=False,
         explanation_source="deterministic",
     )

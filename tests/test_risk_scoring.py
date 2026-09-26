@@ -3,7 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from engine.correlator import correlate_alerts
-from engine.risk_scorer import positive_attribution_sum, score_incident, score_incidents
+from engine.risk_scorer import (
+    diminishing_volume,
+    naive_siem_score,
+    positive_attribution_sum,
+    score_incident,
+    score_incidents,
+)
 from engine.schemas import AlertEntities, Asset, EnrichedAlert, Identity
 
 
@@ -104,6 +110,24 @@ def _scanner_incident():
         )
     ]
     return correlate_alerts(alerts)[0]
+
+
+def test_volume_has_strongly_diminishing_returns() -> None:
+    assert diminishing_volume(1) == 1.0
+    assert diminishing_volume(120) < 2.0
+    assert diminishing_volume(120) < 120 / 10
+
+
+def test_naive_siem_score_sums_raw_severity_weights() -> None:
+    breach = _breach_incident()
+    scanner = _scanner_incident()
+    assert naive_siem_score(breach) == 5 * len(breach.alerts)
+    assert naive_siem_score(scanner) == 15 * 280
+    scored = score_incidents([scanner, breach])
+    assert scored[0].incident.alerts[0].alert_id.startswith("B")
+    scanner_scored = next(item for item in scored if item.incident.alerts[0].alert_id.startswith("S"))
+    assert scanner_scored.naive_siem_rank == 1
+    assert scanner_scored.legacy_score > score_incident(breach).legacy_score
 
 
 def test_crown_jewel_breach_outranks_critical_sandbox_scanner() -> None:

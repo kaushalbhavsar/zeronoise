@@ -105,10 +105,12 @@ The normalizer parses JSONL, canonicalizes timestamps and IPs, resolves host IP 
 
 ## Design constraints
 
-- Dedup key: rule + user + host + src IP + dest IP inside a 15-minute window.
-- Correlation: shared resolved entity (user, host, process hash, non-generic IP) inside 120 minutes. Transitive.
-- Generic resolvers such as `8.8.8.8` never join incidents.
-- Legacy SIEM score: `1000 × max_severity + 10 × alerts + events`.
+- Dedup key: rule + user + host + src IP + dest IP inside a **rolling 15-minute** window. Survivors carry `event_count`, `original_alert_ids`, `first_seen`, `last_seen`.
+- Correlation: NetworkX `MultiGraph`. Edges are `SHARED_HOST`, `SHARED_IDENTITY`, `SHARED_ATTACKER_IP`, `DESTINATION_PIVOT`, `HOST_IP_PIVOT`, `PROCESS_HASH`, each with `time_delta_minutes` and `correlation_strength`.
+- Two alerts join only if they are within **4 hours** and have at least one meaningful relationship.
+- DNS/proxy/NAT/LB/jump/DHCP/scanner infrastructure and high-fanout attacker IPs cannot weld unrelated hosts. Components over 25 nodes are split on strong edges, then time gaps.
+- Volume has strongly diminishing returns (`1 + log2(n)/10`). 120 identical alerts are not 120 attack stages.
+- Naive SIEM score: `Σ SEVERITY_WEIGHTS[raw_alert]` with Low=2, Medium=5, High=10, Critical=15. **No dedup.** `naive_siem_rank` is that descending order.
 
 ## Tests
 

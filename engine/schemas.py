@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 Severity = Literal["Low", "Medium", "High", "Critical"]
 SourceProduct = Literal["EDR", "IAM", "NDR", "WAF", "DLP", "SIEM"]
@@ -73,11 +73,28 @@ class EnrichedAlert(BaseModel):
     event_count: int = 1
     scenario_id: str | None = None
     original_alert_id: str | None = None
+    original_alert_ids: list[str] = Field(default_factory=list)
     member_alert_ids: list[str] = Field(default_factory=list)
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
     asset: Asset | None = None
     dest_asset: Asset | None = None
     identity: Identity | None = None
     context_gaps: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _fill_dedup_fields(self) -> "EnrichedAlert":
+        if self.first_seen is None:
+            self.first_seen = self.timestamp
+        if self.last_seen is None:
+            self.last_seen = self.timestamp
+        if not self.original_alert_ids:
+            self.original_alert_ids = list(self.member_alert_ids or [self.alert_id])
+        if not self.member_alert_ids:
+            self.member_alert_ids = list(self.original_alert_ids)
+        if not self.original_alert_id:
+            self.original_alert_id = self.original_alert_ids[0]
+        return self
 
 
 class RawAlert(BaseModel):
@@ -130,6 +147,24 @@ class RiskBreakdown(BaseModel):
     formula: str
 
 
+RelationshipType = Literal[
+    "SHARED_HOST",
+    "SHARED_IDENTITY",
+    "SHARED_ATTACKER_IP",
+    "DESTINATION_PIVOT",
+    "HOST_IP_PIVOT",
+    "PROCESS_HASH",
+]
+
+
+class GraphEdge(BaseModel):
+    source_alert_id: str
+    target_alert_id: str
+    relationship_type: RelationshipType
+    time_delta_minutes: float
+    correlation_strength: float
+
+
 class CandidateIncident(BaseModel):
     incident_id: str
     alert_ids: list[str]
@@ -143,12 +178,14 @@ class CandidateIncident(BaseModel):
     unique_hosts: list[str]
     total_event_count: int
     max_severity: Severity
+    edges: list[GraphEdge] = Field(default_factory=list)
 
 
 class ScoredIncident(BaseModel):
     incident: CandidateIncident
     risk: RiskBreakdown
     legacy_score: float
+    naive_siem_rank: int | None = None
     title: str
 
 
@@ -159,6 +196,7 @@ class IncidentCard(BaseModel):
     legacy_score: float
     risk_rank: int | None = None
     legacy_rank: int | None = None
+    naive_siem_rank: int | None = None
     first_seen: datetime
     last_seen: datetime
     alert_count: int
@@ -176,6 +214,7 @@ class IncidentCard(BaseModel):
     contrastive: str | None = None
     risk: RiskBreakdown
     alert_ids: list[str]
+    edges: list[GraphEdge] = Field(default_factory=list)
     llm_enhanced: bool = False
     explanation_source: Literal["deterministic", "llm"] = "deterministic"
 
