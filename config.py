@@ -124,32 +124,6 @@ PRIVILEGE_WEIGHT: dict[str, float] = {
     "tier_1_cloud_admin": 1.4,
     "tier_0_domain_admin": 1.8,
 }
-DATA_WEIGHT: dict[str, float] = {
-    "public": 0.5,
-    "internal": 0.9,
-    "confidential": 1.4,
-    "crown_jewel_pii_pci": 2.0,
-}
-CRITICALITY_WEIGHT: dict[int, float] = {
-    1: 0.4,
-    2: 0.8,
-    3: 1.2,
-    4: 1.6,
-    5: 2.0,
-}
-ASSET_ENV_BLEND = 0.35
-ASSET_DATA_BLEND = 0.35
-ASSET_CRIT_BLEND = 0.30
-ASSET_SCORE_MIN = 0.4
-ASSET_SCORE_MAX = 2.0
-
-# Identity impact. Highest-risk involved identity wins (P_priv).
-PRIVILEGE_WEIGHT: dict[str, float] = {
-    "standard_user": 0.5,
-    "service_account": 1.0,
-    "tier_1_cloud_admin": 1.4,
-    "tier_0_domain_admin": 1.8,
-}
 
 # Blast radius / context multiplier C. Configurable so the demo can
 # emphasize crown-jewel asset impact over identity without code changes.
@@ -159,12 +133,25 @@ BLAST_IDENTITY_WEIGHT = 0.35
 # Unknown CMDB/IAM context is not treated as crown-jewel or as zero.
 NEUTRAL_IMPACT = 0.90
 NEUTRAL_PRIVILEGE = 0.70
-# No observed identity: floor so the B×K×I product does not collapse to 0.
 UNOBSERVED_PRIVILEGE = 0.50
 
-# Maximum fraction of the pre-noise product that bursty, high-FPR
-# incidents can lose. Noise never increases rank.
-NOISE_DISCOUNT_CAP = 0.45
+# Counterfactual ablation baselines (spec §28).
+FIDELITY_BASELINE = 2.0  # minimum incident fidelity: one Low, conf=1, FPR=0, n=1
+PROGRESSION_BASELINE = 1.0
+BLAST_BASELINE = 1.0
+
+# Saturating map RawRisk → [0, 100]: 100 * (1 - exp(-RawRisk / SCALE)).
+# Chosen on seed=42 so the quiet crown-jewel sits in the P1 band and
+# isolated noise stays in the single digits. Not assigned per scenario.
+RISK_SCALE = 45.0
+
+# Attribution factor labels. Order is part of the public card schema.
+ATTRIBUTION_FACTORS: tuple[str, ...] = (
+    "Alert Fidelity",
+    "Kill-Chain Progression",
+    "Blast Radius",
+    "FP/Noise Suppression",
+)
 
 # Aliases used by the explainer when picking the highest-sensitivity asset.
 ENV_SCORE = ENVIRONMENT_WEIGHT
