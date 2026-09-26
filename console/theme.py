@@ -45,9 +45,11 @@ header[data-testid="stHeader"],
 }
 [data-testid="stDecoration"] { display: none !important; }
 [data-testid="stStatusWidget"],
-.stDeployButton { display: none !important; }
-#MainMenu { visibility: hidden; }
-footer { visibility: hidden; }
+.stDeployButton,
+[data-testid="stAppDeployButton"],
+.stAppDeployButton { display: none !important; }
+#MainMenu, footer { visibility: hidden; display: none !important; }
+iframe[title="streamlit toolbar"] { display: none !important; }
 button:focus-visible, a:focus-visible, [tabindex]:focus-visible,
 [data-testid="stSelectbox"] div:focus-visible,
 input:focus-visible, textarea:focus-visible {
@@ -107,7 +109,7 @@ input:focus-visible, textarea:focus-visible {
 .icard {
   border: 1px solid var(--zn-border); border-left-width: 4px;
   border-radius: var(--zn-radius); padding: 1.15rem 1.2rem;
-  background: var(--zn-panel); min-height: 13.5rem; height: 100%;
+  background: var(--zn-panel); min-height: 0; height: 100%;
   display: flex; flex-direction: column; gap: 0.35rem;
 }
 .icard.pri-p0 { border-left-color: #7c3aed; }
@@ -124,9 +126,12 @@ input:focus-visible, textarea:focus-visible {
   color: var(--zn-muted); font-size: 0.86rem;
   font-variant-numeric: tabular-nums; font-feature-settings: "tnum";
 }
-.icard .id {
+.icard .id, .zn-id {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.78rem; color: var(--zn-muted); white-space: nowrap;
+  font-size: 0.72rem; color: var(--zn-muted); white-space: nowrap;
+}
+.zn-notice {
+  color: #b6e0c8; font-size: 0.86rem; margin: 0.35rem 0 0.55rem 0;
 }
 .case-header {
   position: sticky; top: 0.35rem; z-index: 20;

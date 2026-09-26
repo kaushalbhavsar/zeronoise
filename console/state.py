@@ -118,7 +118,9 @@ def persist_status(incident_id: str, status: str) -> None:
     old = record["status"]
     record["status"] = status
     record_event(incident_id, "status", old, status)
-    st.toast(f"Status saved: {status}")
+    notice = f"Status saved · {status} · {SESSION_ACTOR}"
+    st.session_state.last_notice = notice
+    st.toast(notice)
 
 
 def persist_owner(incident_id: str, owner: str) -> None:
@@ -128,7 +130,9 @@ def persist_owner(incident_id: str, owner: str) -> None:
         return
     record["assignee"] = owner
     record_event(incident_id, "owner", old, owner)
-    st.toast(f"Owner saved: {owner}")
+    notice = f"Owner saved · {owner}"
+    st.session_state.last_notice = notice
+    st.toast(notice)
 
 
 def persist_notes(incident_id: str, notes: str) -> None:
@@ -136,7 +140,9 @@ def persist_notes(incident_id: str, notes: str) -> None:
     old = record["notes"]
     record["notes"] = notes
     record_event(incident_id, "notes", "(updated)" if old else "(empty)", "(saved)")
-    st.toast("Notes saved")
+    notice = "Notes saved"
+    st.session_state.last_notice = notice
+    st.toast(notice)
 
 
 def persist_task(incident_id: str, action: str, done: bool) -> None:
@@ -145,11 +151,15 @@ def persist_task(incident_id: str, action: str, done: bool) -> None:
     if done and action not in items:
         items.append(action)
         record_event(incident_id, "task", "open", action)
-        st.toast("Task recorded in this case file")
+        notice = "Task recorded in this case file"
+        st.session_state.last_notice = notice
+        st.toast(notice)
     elif not done and action in items:
         items.remove(action)
         record_event(incident_id, "task", action, "open")
-        st.toast("Task unmarked")
+        notice = "Task unmarked"
+        st.session_state.last_notice = notice
+        st.toast(notice)
 
 
 def set_status(incident_id: str, status: str) -> None:
@@ -165,6 +175,7 @@ def back_to_queue() -> None:
     st.session_state.active_case_id = None
     st.session_state.ignore_queue_pick = True
     st.session_state.show_fp_confirm = False
+    st.session_state.last_notice = None
 
 
 def apply_deep_link(known_ids: set[str]) -> None:

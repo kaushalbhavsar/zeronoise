@@ -5,13 +5,13 @@ from __future__ import annotations
 import streamlit as st
 
 from console.common import (
-    classify,
     defined_metric,
     display,
+    heading,
+    human_title,
     page_header,
     primary_asset,
     render_load_error,
-    section,
     session_chrome,
     priority,
 )
@@ -69,27 +69,24 @@ def render() -> None:
     with c4:
         defined_metric("high", "High-priority", high_n)
     st.caption(
-        f"{review_reduction_label(raw_n, inc_n)} because {raw_n} raw alerts became {inc_n} incidents. "
-        f"Dedup compression is {result.metrics.volume_compression_pct:.0f}% ({raw_n} → {dedup_n}). "
-        "These are volume counts, not measured analyst-time savings."
+        f"{review_reduction_label(raw_n, inc_n)} ({raw_n} → {inc_n}). "
+        f"Dedup {result.metrics.volume_compression_pct:.0f}% ({raw_n} → {dedup_n}). Volume, not time saved."
     )
 
-    section("AI rank vs legacy rank", "Comparison")
-    st.caption("Significant change: absolute rank delta of 5 or more on this snapshot.")
+    heading("AI rank vs legacy rank")
     rows = []
     for item in result.risk_ranked:
         delta = rank_delta(item.risk_rank, item.naive_siem_rank)
         rows.append(
             {
                 "Priority": priority(item.risk.risk_score),
-                "Incident": display(item.title, item),
+                "Incident": display(human_title(item), item),
                 "AI rank": item.risk_rank or "—",
                 "Legacy rank": item.naive_siem_rank or "—",
                 "Rank delta": rank_delta_label(delta),
                 "Risk": round(item.risk.risk_score, 1),
                 "Legacy score": round(item.legacy_score, 0),
                 "Asset": display(primary_asset(item), item),
-                "Class": classify(item),
                 "_id": item.incident.incident_id,
                 "_abs": abs(delta or 0),
             }
@@ -103,7 +100,7 @@ def render() -> None:
     )
 
     moved = significant_rank_moves(result.risk_ranked, min_abs_delta=5)
-    section("Significant rank changes", "Assessment")
+    heading("Significant rank changes")
     if not moved:
         st.info("No incident moved 5 or more positions between legacy and risk rank.")
     else:
@@ -111,7 +108,7 @@ def render() -> None:
             delta = rank_delta(item.risk_rank, item.naive_siem_rank)
             direction = "higher" if (delta or 0) > 0 else "lower"
             st.markdown(
-                f"**{display(item.title, item)}** · AI #{item.risk_rank} vs legacy #{item.naive_siem_rank} "
+                f"**{display(human_title(item), item)}** · AI #{item.risk_rank} vs legacy #{item.naive_siem_rank} "
                 f"({rank_delta_label(delta)} — ranks {direction} under risk scoring)"
             )
             card = next((c for c in result.cards if c.incident_id == item.incident.incident_id), None)
@@ -135,22 +132,21 @@ def render() -> None:
     if crown:
         st.markdown("**Example still in this snapshot**")
         st.write(
-            f"{crown.title} moved from legacy rank #{crown.naive_siem_rank} to risk rank "
+            f"{display(human_title(crown), crown)} moved from legacy rank #{crown.naive_siem_rank} to risk rank "
             f"#{crown.risk_rank}. The legacy ranking used severity × volume only."
         )
 
     with st.expander("Sensor coverage, correlation, and scoring", expanded=not presenting()):
         left, right = st.columns(2)
         with left:
-            section("Sensor coverage", "Observed")
+            heading("Sensor coverage")
             coverage = _sensor_rows(result.risk_ranked)
             if coverage:
                 st.dataframe(coverage, width="stretch", hide_index=True, key="intel-sensors")
-                st.caption("Count of incidents that include at least one alert from that sensor. Not a coverage SLA.")
             else:
                 st.info("No sensor labels are present on this snapshot.")
         with right:
-            section("Why these alerts are connected", "Observed")
+            heading("Why these alerts are connected")
             with_edges = sum(1 for item in result.risk_ranked if item.incident.edges)
             defined_metric("edges", "Incidents with inter-alert edges", with_edges)
             st.metric(
@@ -158,9 +154,8 @@ def render() -> None:
                 inc_n - with_edges,
                 help=METRIC_DEFINITIONS["incidents"] + " This count is incidents minus those with edges.",
             )
-            st.caption("Edges are SHARED_HOST, SHARED_IDENTITY, attacker IP, pivots, and process hash.")
 
-        section("How scoring works", "Assessment")
+        heading("How scoring works")
         st.write(
             "Risk is RawRisk = B × K × C, then mapped with a saturating curve. "
             "Contribution percentages on a case are ablation shares — they are not confidence probabilities."

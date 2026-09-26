@@ -8,7 +8,7 @@ import textwrap
 from datetime import datetime, timezone
 
 from config import KILL_CHAIN
-from console.common import fmt_age, fmt_day, fmt_ts, priority
+from console.common import fmt_age, fmt_day, fmt_ts, human_title, priority
 from engine.presentation import (
     ACTION_GROUPS,
     context_badges,
@@ -76,8 +76,9 @@ def case_markdown(
     status = record.get("status") or "New"
     owner = record.get("assignee") or "Unassigned"
     lines = [
-        f"# {_shown(item.title, item, mask)}",
+        f"# {_shown(human_title(item), item, mask)}",
         "",
+        f"- Engine title: {_shown(item.title, item, mask)}",
         f"- Incident ID: `{_shown(item.incident.incident_id, item, mask)}`",
         f"- Priority: {pri} (from risk score; P0 >= 85, P1 >= 70)",
         f"- Status: {status}",

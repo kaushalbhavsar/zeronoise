@@ -9,17 +9,17 @@ import streamlit as st
 
 from config import KILL_CHAIN
 from console.common import (
-    copyable_id,
     display,
     empty_state,
     fmt_age,
     fmt_ts,
-    primary_asset,
-    primary_user,
+    human_title,
+    presentation_toggle,
     priority,
     render_badges,
     section,
     severity_token,
+    short_host,
 )
 from console.export import case_markdown, case_pdf, export_filenames
 from console.state import (
@@ -110,41 +110,36 @@ def render_case_header(item: ScoredIncident, card: IncidentCard, now: datetime) 
     pri = priority(item.risk.risk_score)
     next_action = primary_next_action(item)
     roles = incident_roles(item)
-    if st.button("← Back to queue", key="back-to-queue"):
-        back_to_queue()
-        st.rerun()
+    nav, chrome = st.columns([2.2, 0.8])
+    with nav:
+        if st.button("← Back to queue", key="back-to-queue"):
+            back_to_queue()
+            st.rerun()
+    with chrome:
+        presentation_toggle()
     st.markdown(
         f"<div class='case-header pri-{pri.lower()}'>"
-        f"<div class='case-title'>{display(item.title, item)}</div>"
+        f"<div class='case-title'>{display(human_title(item), item)}</div>"
         f"<div class='case-meta'>"
         f"<span class='pri {pri.lower()}'>{pri}</span> · {record['status']} · "
         f"{record['assignee']} · risk {item.risk.risk_score:.0f} · "
-        f"vendor {vendor_severity(item)} · "
-        f"age {fmt_age(item.incident.first_seen, now)} · "
-        f"{fmt_ts(item.incident.first_seen)} → {fmt_ts(item.incident.last_seen)}"
+        f"age {fmt_age(item.incident.first_seen, now)}"
         f"</div>"
-        f"<div class='case-meta'>Source {display(roles['source_host'], item)} · "
-        f"Destination {display(roles['destination'], item)} · "
-        f"Initial identity {display(roles['initial_identity'], item)} · "
-        f"Privileged identity {display(roles['privileged_identity'], item)}</div>"
+        f"<div class='case-meta'>"
+        f"{display(short_host(roles['source_host']), item)} → "
+        f"{display(short_host(roles['destination']), item)} · "
+        f"{display(roles['privileged_identity'], item)}"
+        f"</div>"
+        f"<div class='zn-id'>{display(item.incident.incident_id, item)}</div>"
         f"</div>",
         unsafe_allow_html=True,
     )
-    id_col, badge_col = st.columns([0.45, 1.55])
-    with id_col:
-        shown_id = display(item.incident.incident_id, item)
-        copyable_id(shown_id, key=f"case-id-{item.incident.incident_id}")
-        if not presenting():
-            st.caption(f"Deep link: add `?case={item.incident.incident_id}` to the app URL.")
-    with badge_col:
-        render_badges(item, limit=4)
-    st.caption(
-        f"Priority {pri} is derived from risk score (P0 ≥ 85, P1 ≥ 70). "
-        f"Vendor severity is {vendor_severity(item)} and is not the queue rank. "
-        "This snapshot does not produce an incident-level confidence percentage."
-    )
+    render_badges(item, limit=4)
+    notice = st.session_state.get("last_notice")
+    if notice:
+        st.markdown(f"<div class='zn-notice'>{notice}</div>", unsafe_allow_html=True)
 
-    actions, owner, resolve = st.columns([1.5, 0.7, 0.9])
+    actions, owner, tools = st.columns([1.6, 0.7, 0.9])
     with actions:
         b1, b2, b3 = st.columns([1.15, 1, 1])
         if b1.button(
@@ -164,7 +159,6 @@ def render_case_header(item: ScoredIncident, card: IncidentCard, now: datetime) 
         ):
             persist_status(item.incident.incident_id, "Escalated")
             st.rerun()
-        st.caption(f"Primary next action: {next_action}.")
     with owner:
         chosen = st.selectbox(
             "Owner",
@@ -174,8 +168,8 @@ def render_case_header(item: ScoredIncident, card: IncidentCard, now: datetime) 
         )
         if st.button("Save owner", key=f"save-owner-{item.incident.incident_id}"):
             persist_owner(item.incident.incident_id, chosen)
-        st.caption(f"Status: {record['status']}")
-    with resolve:
+    with tools:
+        render_case_export(item, card, record, now)
         with st.popover("Resolve"):
             st.write("Closing a case requires a recorded outcome. This does not delete source alerts.")
             reason = st.text_area(
@@ -196,7 +190,6 @@ def render_case_header(item: ScoredIncident, card: IncidentCard, now: datetime) 
                 record["close_reason"] = str(reason).strip()
                 persist_status(item.incident.incident_id, "Closed — true positive")
                 st.rerun()
-        render_case_export(item, card, record, now)
     render_session_activity(record)
 
 
@@ -238,76 +231,23 @@ def render_case_export(
 
 def render_decision_brief(item: ScoredIncident, card: IncidentCard) -> None:
     section("Decision brief", "Assessment")
-    blocks = [
-        ("What happened?", "Observed", display(card.executive_summary, item)),
-        ("What is exposed?", "Observed", None),
-        ("Why does this matter?", "Assessment", display(why_this_matters(item), item)),
-        ("What evidence supports the assessment?", "Observed", display(evidence_summary(item), item)),
-        ("What should happen next?", "Recommended", display(next_recommended_action(card), item)),
-    ]
-    for title, kind, body in blocks:
-        section(title, kind)
-        if body is None:
-            render_context_strip(item)
-        else:
-            st.write(body)
+    st.markdown("**What happened?**")
+    st.write(display(card.executive_summary, item))
+    st.markdown("**Why it matters**")
+    st.write(display(why_this_matters(item), item))
+    st.markdown("**Next**")
+    st.write(display(next_recommended_action(card), item))
+    render_context_strip(item)
     if card.why_not_false_positive:
-        section("Why this may be a real attack", "Assessment")
-        st.write(display(card.why_not_false_positive, item))
-    if not presenting():
-        with st.expander("All resolved identities and assets"):
-            st.write("\n".join(exposed_identities(item) or ["No resolved identity"]))
-            st.write("\n".join(exposed_assets(item) or ["No resolved asset"]))
+        with st.expander("Why this may be a real attack", expanded=False):
+            st.write(display(card.why_not_false_positive, item))
 
 
 def render_overview_tab(item: ScoredIncident, card: IncidentCard) -> None:
     render_decision_brief(item, card)
     if card.contrastive_explanation or card.contrastive:
-        with st.expander("Why this ranks high", expanded=not presenting()):
+        with st.expander("Why this ranks high", expanded=False):
             st.write(display(card.contrastive_explanation or card.contrastive or "", item))
-    if presenting():
-        return
-    left, right = st.columns(2)
-    with left:
-        section("Affected identities", "Observed")
-        if card.identities:
-            st.dataframe(
-                [
-                    {
-                        "User": ident.user_id,
-                        "Department": ident.department,
-                        "Privilege": ident.privilege_tier,
-                    }
-                    for ident in card.identities
-                ],
-                width="stretch",
-                hide_index=True,
-                key=f"idents-{item.incident.incident_id}",
-            )
-        else:
-            st.write(primary_user(item))
-    with right:
-        section("Affected assets", "Observed")
-        if card.assets:
-            st.dataframe(
-                [
-                    {
-                        "Host": asset.host_id,
-                        "Hostname": asset.hostname,
-                        "Env": asset.environment,
-                        "Data": asset.data_sensitivity,
-                        "Crit": asset.business_criticality,
-                        "IP": asset.ip_address,
-                    }
-                    for asset in card.assets
-                ],
-                width="stretch",
-                hide_index=True,
-                key=f"assets-{item.incident.incident_id}",
-            )
-        else:
-            st.write(primary_asset(item))
-    st.caption(f"Sensors: {', '.join(card.products) or '—'}  ·  Class is derived from observed tactics, not scenario_id.")
 
 
 def render_timeline_tab(item: ScoredIncident, card: IncidentCard) -> None:
