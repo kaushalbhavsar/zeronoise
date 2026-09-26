@@ -8,6 +8,8 @@ from engine.presentation import (
     correlation_evidence,
     grouped_correlation_evidence,
     group_recommended_actions,
+    link_evidence,
+    observable_evidence,
     incident_roles,
     mask_identifier,
     parse_timeline_line,
@@ -128,6 +130,30 @@ def test_badge_tone_treats_production_as_context() -> None:
 
 def test_review_reduction_is_volume_not_fatigue() -> None:
     assert review_reduction_label(300, 111) == "63% fewer items to review"
+
+
+def test_observable_evidence_is_artifacts_not_alert_lists() -> None:
+    result = run_pipeline(str(ALERTS_PATH), str(CMDB_PATH), str(IAM_PATH), use_llm=False)
+    crown = next(
+        item
+        for item in result.risk_ranked
+        if "usr_admin_root" in item.incident.unique_users
+    )
+    facts = observable_evidence(crown)
+    identities = {row["identity"] for row in facts["identities"]}
+    assert "usr_admin_root" in identities
+    assert "usr_svc_deploy" in identities
+    hosts = {row["host"] for row in facts["hosts"]}
+    assert "prd-billing-db-01" in hosts
+    ips = {row["ip"] for row in facts["network"]}
+    assert "45.133.1.54" in ips
+    assert any("2.4 GB" in str(row["what_was_observed"]) for row in facts["detections"])
+    assert all("alert_id" in row for row in facts["detections"])
+    links = link_evidence(crown)
+    assert links
+    values = {row["value"] for row in links}
+    assert values
+    assert all(int(row["event_count"]) >= 2 for row in links)
 
 
 def test_grouped_correlation_collapses_pair_reasons() -> None:

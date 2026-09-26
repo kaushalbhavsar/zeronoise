@@ -38,8 +38,9 @@ from engine.presentation import (
     evidence_summary,
     exposed_assets,
     exposed_identities,
-    grouped_correlation_evidence,
     group_recommended_actions,
+    link_evidence,
+    observable_evidence,
     incident_roles,
     next_recommended_action,
     parse_timeline_line,
@@ -421,48 +422,169 @@ def render_response_tab(item: ScoredIncident, card: IncidentCard) -> None:
 
 
 def render_evidence_tab(item: ScoredIncident, card: IncidentCard) -> None:
-    groups = grouped_correlation_evidence(item)
-    if groups:
-        st.markdown("**Why were these alerts grouped?**")
-        for row in groups:
-            reasons = row["reasons"]
-            st.write(f"`{row['from']}` → `{row['to']}`")
-            st.caption(" · ".join(str(reason) for reason in reasons))
+    facts = observable_evidence(item)
+    st.caption(
+        "Evidence is the observed artifacts and detections. Alert IDs are citations. "
+        "This tab does not invent packet captures, file contents, or business impact."
+    )
+
+    st.markdown("**Detections**")
+    if facts["detections"]:
+        st.dataframe(
+            [
+                {
+                    "When": row["when"],
+                    "Sensor": row["sensor"],
+                    "What was observed": display(str(row["what_was_observed"]), item),
+                    "Tactic": row["tactic"],
+                    "Technique": row["technique"],
+                    "Vendor severity": row["vendor_severity"],
+                    "Identity": display(str(row["identity"]), item),
+                    "Host": display(str(row["host"]), item),
+                    "Src IP": display(str(row["src_ip"]), item),
+                    "Dest IP": display(str(row["dest_ip"]), item),
+                    "Process hash": display(str(row["process_hash"]), item),
+                    "Raw events": row["raw_events"],
+                }
+                for row in facts["detections"]
+            ],
+            width="stretch",
+            hide_index=True,
+            key=f"evidence-detections-{item.incident.incident_id}",
+        )
     else:
-        st.write("Single-alert incident — no inter-alert edges.")
-    if card.edges:
-        with st.expander("Raw correlation edges"):
+        st.caption("No detections were attached to this incident.")
+
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**Identities**")
+        if facts["identities"]:
             st.dataframe(
                 [
                     {
-                        "From": edge.source_alert_id,
-                        "To": edge.target_alert_id,
-                        "Link": edge.relationship_type,
-                        "Δ min": edge.time_delta_minutes,
-                        "Strength": edge.correlation_strength,
+                        "Identity": display(str(row["identity"]), item),
+                        "Privilege": row["privilege"],
+                        "Department": row["department"],
+                        "Sensors": row["sensors"],
+                        "Tactics": row["tactics"],
                     }
-                    for edge in card.edges
+                    for row in facts["identities"]
                 ],
                 width="stretch",
                 hide_index=True,
-                key=f"evidence-edges-{item.incident.incident_id}",
+                key=f"evidence-idents-{item.incident.incident_id}",
             )
-    originals = raw_alert_ids(item)
-    if presenting():
-        st.caption("Raw alert identifiers are hidden in presentation mode.")
-        return
-    with st.expander("Raw alert references"):
-        st.caption(
-            f"{len(originals)} raw alert IDs collapsed into "
-            f"{len(item.incident.alerts)} deduplicated events"
+        else:
+            st.caption("No identity was resolved on these events.")
+        st.markdown("**Hosts**")
+        if facts["hosts"]:
+            st.dataframe(
+                [
+                    {
+                        "Host": display(str(row["host"]), item),
+                        "Hostname": display(str(row["hostname"]), item),
+                        "Environment": row["environment"],
+                        "Data": row["data"],
+                        "Crit": row["criticality"],
+                        "Role": row["roles"],
+                        "Sensors": row["sensors"],
+                    }
+                    for row in facts["hosts"]
+                ],
+                width="stretch",
+                hide_index=True,
+                key=f"evidence-hosts-{item.incident.incident_id}",
+            )
+        else:
+            st.caption("No host was resolved on these events.")
+    with right:
+        st.markdown("**Network**")
+        if facts["network"]:
+            st.dataframe(
+                [
+                    {
+                        "Direction": row["direction"],
+                        "IP": display(str(row["ip"]), item),
+                        "Sensors": row["sensors"],
+                        "CMDB": row["gaps"],
+                    }
+                    for row in facts["network"]
+                ],
+                width="stretch",
+                hide_index=True,
+                key=f"evidence-net-{item.incident.incident_id}",
+            )
+        else:
+            st.caption("No source or destination IP was present on these events.")
+        st.markdown("**Process hashes**")
+        if facts["hashes"]:
+            st.dataframe(
+                [
+                    {
+                        "Hash": display(str(row["hash"]), item),
+                        "Sensors": row["sensors"],
+                        "Rules": display(str(row["rules"]), item),
+                    }
+                    for row in facts["hashes"]
+                ],
+                width="stretch",
+                hide_index=True,
+                key=f"evidence-hash-{item.incident.incident_id}",
+            )
+        else:
+            st.caption("No process hash was present on these events.")
+
+    st.markdown("**How the events are linked**")
+    links = link_evidence(item)
+    if links:
+        st.dataframe(
+            [
+                {
+                    "Shared fact": row["fact"],
+                    "Value": display(str(row["value"]), item),
+                    "Events linked": row["event_count"],
+                }
+                for row in links
+            ],
+            width="stretch",
+            hide_index=True,
+            key=f"evidence-links-{item.incident.incident_id}",
         )
-        ev1, ev2 = st.columns(2)
-        with ev1:
-            st.markdown("**Source events**")
+        st.caption("One row per shared artifact. This is not a list of alert-id pairs.")
+    else:
+        st.caption("Single-alert incident — no shared identity, host, IP, or hash links.")
+
+    if facts["gaps"] and not presenting():
+        with st.expander("Context gaps"):
+            for gap in facts["gaps"]:
+                st.write(f"- {gap}")
+
+    if not presenting():
+        with st.expander("Alert citations and raw edges"):
+            st.caption("Alert IDs cite the detections above. They are not additional evidence.")
+            originals = raw_alert_ids(item)
+            st.write(
+                f"{len(originals)} raw rows collapsed into {len(item.incident.alerts)} detections."
+            )
             st.code("\n".join(originals[:80]) + ("\n…" if len(originals) > 80 else "") or "—")
-        with ev2:
-            st.markdown("**Deduplicated survivors**")
-            st.code("\n".join(card.alert_ids) or "—")
+            if card.edges:
+                st.dataframe(
+                    [
+                        {
+                            "From": edge.source_alert_id,
+                            "To": edge.target_alert_id,
+                            "Link": edge.relationship_type,
+                            "Δ min": edge.time_delta_minutes,
+                            "Strength": edge.correlation_strength,
+                        }
+                        for edge in card.edges
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                    key=f"evidence-edges-{item.incident.incident_id}",
+                )
+    else:
+        st.caption("Raw alert identifiers are hidden in presentation mode.")
 
 
 def render_case_workspace(
