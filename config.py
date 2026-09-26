@@ -92,6 +92,10 @@ SENSITIVITY_SCORE: dict[str, float] = {
     "public": 0.10,
 }
 
+# Unknown CMDB/IAM context is not treated as crown-jewel or as zero.
+NEUTRAL_IMPACT = 0.35
+NEUTRAL_PRIVILEGE = 0.35
+
 PRIVILEGE_SCORE: dict[str, float] = {
     "tier_0_domain_admin": 1.00,
     "tier_1_cloud_admin": 0.85,

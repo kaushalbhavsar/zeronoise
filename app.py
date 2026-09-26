@@ -64,12 +64,10 @@ def _scenario(item: ScoredIncident) -> str:
 
 def _label(scenario: str) -> str:
     return {
-        "true_breach": "True breach (stealthy APT)",
-        "noisy_scanner": "Noisy scanner (sandbox)",
-        "staging_vuln_scan": "Staging vulnerability scan",
-        "privileged_anomaly": "Privileged-account anomaly",
-        "insider_dlp": "Insider / DLP movement",
-        "isolated_noise": "Isolated noise",
+        "quiet_crown_jewel": "Quiet crown-jewel breach",
+        "ransomware_staging": "Ransomware staging",
+        "noisy_false_priority": "Noisy false priority (sandbox)",
+        "background_noise": "Background noise",
     }.get(scenario, scenario)
 
 
@@ -189,10 +187,11 @@ def main() -> None:
     )
 
     st.caption(
-        f"True-breach ranks #{metrics.true_breach_risk_rank} by risk and "
-        f"#{metrics.true_breach_legacy_rank} in a legacy SIEM. "
-        f"Noisy scanner ranks #{metrics.noisy_scanner_risk_rank} by risk and "
-        f"#{metrics.noisy_scanner_legacy_rank} in a legacy SIEM."
+        f"Quiet crown-jewel ranks #{metrics.quiet_crown_jewel_risk_rank} by risk "
+        f"and #{metrics.quiet_crown_jewel_legacy_rank} in a legacy SIEM. "
+        f"Ransomware staging ranks #{metrics.ransomware_staging_risk_rank} by risk. "
+        f"Sandbox scanner ranks #{metrics.noisy_false_priority_risk_rank} by risk "
+        f"and #{metrics.noisy_false_priority_legacy_rank} in a legacy SIEM."
     )
 
     tab_queue, tab_compare, tab_card, tab_method = st.tabs(

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Generate a seeded, offline SOC dataset that proves ranking inversion.
+"""Generate a seeded ~300-alert / 24-hour SOC dataset.
 
-The dataset is built so a stealthy multi-stage breach against a crown-jewel
-production system produces a handful of Medium alerts, while a noisy scanner
-hammers a sandbox with hundreds of Critical alerts. The engine must rank the
-breach first by risk and the scanner first by legacy SIEM logic.
+Mandatory scenarios
+-------------------
+A  quiet_crown_jewel     4 Medium alerts, ~90 minutes, MUST be risk #1
+B  ransomware_staging    6 Medium/High alerts, MUST be about risk #2
+C  noisy_false_priority  ~120 Critical WAF/IDS alerts, MUST be legacy #1
 
-scenario_id is written only so acceptance tests can label the demo. The
-engine must never read it for correlation or scoring.
+Background noise is 160–180 isolated or tiny-burst alerts that must not
+weld into a giant incident. scenario_id is for demo grading only.
 """
 
 from __future__ import annotations
@@ -24,51 +25,51 @@ if str(ROOT) not in sys.path:
 
 from config import ALERTS_PATH, CMDB_PATH, DATA_DIR, IAM_PATH, RANDOM_SEED
 
-T0 = datetime(2026, 3, 18, 13, 5, tzinfo=timezone.utc)
+DAY = datetime(2026, 3, 18, 0, 0, tzinfo=timezone.utc)
 
 ASSETS = [
     {
-        "host_id": "host-pci-db-01",
-        "hostname": "pci-db-01.prod.internal",
-        "ip_address": "10.20.4.12",
+        "host_id": "prd-app-02",
+        "hostname": "prd-app-02.prod.internal",
+        "ip_address": "10.20.8.22",
+        "environment": "prod",
+        "data_sensitivity": "confidential",
+        "business_criticality": 4,
+    },
+    {
+        "host_id": "prd-billing-db-01",
+        "hostname": "prd-billing-db-01.prod.internal",
+        "ip_address": "10.20.4.10",
         "environment": "prod",
         "data_sensitivity": "crown_jewel_pii_pci",
         "business_criticality": 5,
     },
     {
-        "host_id": "host-fin-web-01",
-        "hostname": "fin-web-01.prod.internal",
-        "ip_address": "10.20.8.21",
-        "environment": "prod",
-        "data_sensitivity": "confidential",
-        "business_criticality": 4,
+        "host_id": "dev-sandbox-04",
+        "hostname": "dev-sandbox-04.sandbox.internal",
+        "ip_address": "10.90.4.14",
+        "environment": "sandbox",
+        "data_sensitivity": "public",
+        "business_criticality": 1,
     },
     {
-        "host_id": "host-dc-01",
-        "hostname": "dc-01.corp.internal",
-        "ip_address": "10.10.0.11",
+        "host_id": "wrk-corp-14",
+        "hostname": "wrk-corp-14.corp.internal",
+        "ip_address": "10.30.22.14",
         "environment": "prod",
-        "data_sensitivity": "confidential",
-        "business_criticality": 5,
+        "data_sensitivity": "internal",
+        "business_criticality": 2,
     },
     {
-        "host_id": "host-hr-app-01",
-        "hostname": "hr-app-01.prod.internal",
-        "ip_address": "10.20.9.40",
-        "environment": "prod",
-        "data_sensitivity": "confidential",
-        "business_criticality": 3,
-    },
-    {
-        "host_id": "host-jump-01",
-        "hostname": "jump-01.prod.internal",
+        "host_id": "prd-jump-01",
+        "hostname": "prd-jump-01.prod.internal",
         "ip_address": "10.10.1.8",
         "environment": "prod",
         "data_sensitivity": "internal",
-        "business_criticality": 4,
+        "business_criticality": 3,
     },
     {
-        "host_id": "host-stg-api-02",
+        "host_id": "stg-api-02",
         "hostname": "stg-api-02.staging.internal",
         "ip_address": "10.40.2.16",
         "environment": "staging",
@@ -76,49 +77,17 @@ ASSETS = [
         "business_criticality": 2,
     },
     {
-        "host_id": "host-dev-build-03",
-        "hostname": "dev-build-03.dev.internal",
+        "host_id": "dev-build-07",
+        "hostname": "dev-build-07.dev.internal",
         "ip_address": "10.50.3.9",
         "environment": "dev",
         "data_sensitivity": "internal",
         "business_criticality": 1,
     },
     {
-        "host_id": "host-sandbox-web-07",
-        "hostname": "sandbox-web-07.sandbox.internal",
-        "ip_address": "10.90.1.77",
-        "environment": "sandbox",
-        "data_sensitivity": "public",
-        "business_criticality": 1,
-    },
-    {
-        "host_id": "host-sandbox-api-03",
-        "hostname": "sandbox-api-03.sandbox.internal",
-        "ip_address": "10.90.1.33",
-        "environment": "sandbox",
-        "data_sensitivity": "public",
-        "business_criticality": 1,
-    },
-    {
-        "host_id": "host-ws-maria",
-        "hostname": "ws-maria-chen.corp.internal",
-        "ip_address": "10.30.14.88",
-        "environment": "prod",
-        "data_sensitivity": "internal",
-        "business_criticality": 2,
-    },
-    {
-        "host_id": "host-ws-admin",
-        "hostname": "ws-da-okonkwo.corp.internal",
-        "ip_address": "10.30.1.5",
-        "environment": "prod",
-        "data_sensitivity": "confidential",
-        "business_criticality": 4,
-    },
-    {
-        "host_id": "host-ws-hr",
-        "hostname": "ws-priya-nair.corp.internal",
-        "ip_address": "10.30.18.22",
+        "host_id": "wrk-helpdesk-03",
+        "hostname": "wrk-helpdesk-03.corp.internal",
+        "ip_address": "10.30.8.3",
         "environment": "prod",
         "data_sensitivity": "internal",
         "business_criticality": 2,
@@ -127,87 +96,47 @@ ASSETS = [
 
 IDENTITIES = [
     {
-        "user_id": "u-maria-chen",
-        "department": "Finance",
-        "privilege_tier": "standard_user",
-    },
-    {
-        "user_id": "u-da-okonkwo",
-        "department": "IT Infrastructure",
-        "privilege_tier": "tier_0_domain_admin",
-    },
-    {
-        "user_id": "u-cloud-reza",
-        "department": "Platform Engineering",
-        "privilege_tier": "tier_1_cloud_admin",
-    },
-    {
-        "user_id": "u-svc-backup",
+        "user_id": "usr_svc_deploy",
         "department": "Platform Engineering",
         "privilege_tier": "service_account",
     },
     {
-        "user_id": "u-priya-nair",
-        "department": "Human Resources",
+        "user_id": "usr_admin_root",
+        "department": "IT Infrastructure",
+        "privilege_tier": "tier_0_domain_admin",
+    },
+    {
+        "user_id": "usr_jmartinez",
+        "department": "Finance",
         "privilege_tier": "standard_user",
     },
     {
-        "user_id": "u-helpdesk-lee",
+        "user_id": "usr_helpdesk_lee",
         "department": "IT Support",
         "privilege_tier": "standard_user",
     },
     {
-        "user_id": "u-contractor-kim",
+        "user_id": "usr_cloud_reza",
+        "department": "Platform Engineering",
+        "privilege_tier": "tier_1_cloud_admin",
+    },
+    {
+        "user_id": "usr_contractor_kim",
         "department": "Vendors",
         "privilege_tier": "standard_user",
     },
 ]
 
-PRODUCT_MAP = {
-    "CrowdStrike": "EDR",
-    "Okta": "IAM",
-    "Darktrace": "NDR",
-    "F5": "WAF",
-    "Symantec DLP": "DLP",
-    "Splunk": "SIEM",
-}
-
-SCANNER_RULES = [
-    (
-        "WAF SQLi signature match",
-        "F5",
-        "Initial Access",
-        "T1190 - Exploit Public-Facing Application",
-    ),
-    (
-        "WAF XSS probe blocked",
-        "F5",
-        "Initial Access",
-        "T1190 - Exploit Public-Facing Application",
-    ),
-    (
-        "NDR mass port scan",
-        "Darktrace",
-        "Discovery",
-        "T1046 - Network Service Discovery",
-    ),
-    (
-        "SIEM CVE-2024-21762 exploit attempt",
-        "Splunk",
-        "Initial Access",
-        "T1190 - Exploit Public-Facing Application",
-    ),
-    (
-        "WAF directory traversal",
-        "F5",
-        "Discovery",
-        "T1083 - File and Directory Discovery",
-    ),
-]
+C_SCANNER_IP = "198.51.100.66"
+A_UNUSUAL_IP = "193.32.162.88"
+A_EXFIL_IP = "45.133.1.54"
+APP_IP = "10.20.8.22"
+BILLING_IP = "10.20.4.10"
+SANDBOX_IP = "10.90.4.14"
+WRK_IP = "10.30.22.14"
 
 
 def _alert(
-    rng: random.Random,
     *,
     alert_id: str,
     ts: datetime,
@@ -225,8 +154,7 @@ def _alert(
     dest_ip: str | None = None,
     process_hash: str | None = None,
 ) -> dict:
-    # Intentionally messy vendor-shaped records so the normalizer has work.
-    record: dict = {
+    return {
         "id": alert_id,
         "time": ts.isoformat(),
         "vendor": product,
@@ -243,75 +171,156 @@ def _alert(
         "dest_ip": dest_ip,
         "process_hash": process_hash,
     }
-    return record
 
 
-def _jitter(rng: random.Random, minutes: float, spread: float = 2.0) -> timedelta:
-    return timedelta(minutes=minutes + rng.uniform(-spread, spread))
-
-
-def generate_true_breach(rng: random.Random) -> list[dict]:
-    """Few Medium alerts spanning identity → creds → lateral → exfil."""
-    alerts: list[dict] = []
-    hash_beacon = "a7f3c91e0b2d44aa88c1e6d0f5b9a312"
-    hash_lsass = "c41d2e90ab7712ff0091de44aa18c903"
-    ext_ip = "185.243.112.44"
-    workstation = "10.30.14.88"
-    fin_web = "10.20.8.21"
-    pci_db = "10.20.4.12"
-
-    sequence = [
-        (0, "Okta", "Impossible travel / new ASN login", "Medium", 0.71, 0.22,
-         "Initial Access", "T1078 - Valid Accounts",
-         "u-maria-chen", "host-ws-maria", "203.0.113.19", None, None),
-        (8, "Okta", "MFA prompt accepted from unmanaged device", "Medium", 0.64, 0.28,
-         "Initial Access", "T1078.004 - Cloud Accounts",
-         "u-maria-chen", "host-ws-maria", "203.0.113.19", None, None),
-        (18, "CrowdStrike", "Suspicious encoded PowerShell", "Medium", 0.69, 0.25,
-         "Execution", "T1059.001 - PowerShell",
-         "u-maria-chen", "host-ws-maria", workstation, None, hash_beacon),
-        (27, "CrowdStrike", "LSASS memory access from non-AV process", "Medium", 0.78, 0.18,
-         "Credential Access", "T1003.001 - LSASS Memory",
-         "u-maria-chen", "host-ws-maria", workstation, None, hash_lsass),
-        (36, "Okta", "Privileged group membership change", "Medium", 0.73, 0.16,
-         "Privilege Escalation", "T1098 - Account Manipulation",
-         "u-maria-chen", None, "203.0.113.19", None, None),
-        (44, "CrowdStrike", "Scheduled task created for persistence", "Low", 0.61, 0.30,
-         "Persistence", "T1053.005 - Scheduled Task",
-         "u-maria-chen", "host-ws-maria", workstation, None, hash_beacon),
-        (52, "Darktrace", "Unusual SMB to finance application", "Medium", 0.67, 0.21,
-         "Lateral Movement", "T1021.002 - SMB/Windows Admin Shares",
-         "u-maria-chen", "host-fin-web-01", workstation, fin_web, None),
-        (61, "CrowdStrike", "Remote service execution on fin-web-01", "Medium", 0.70, 0.20,
-         "Lateral Movement", "T1021.001 - Remote Desktop Protocol",
-         "u-maria-chen", "host-fin-web-01", workstation, fin_web, hash_beacon),
-        (70, "CrowdStrike", "Discovery commands on production app host", "Low", 0.58, 0.32,
-         "Discovery", "T1087 - Account Discovery",
-         "u-maria-chen", "host-fin-web-01", fin_web, None, None),
-        (78, "Darktrace", "East-west connection to PCI database", "Medium", 0.76, 0.14,
-         "Lateral Movement", "T1021 - Remote Services",
-         "u-maria-chen", "host-pci-db-01", fin_web, pci_db, None),
-        (86, "Symantec DLP", "Bulk PCI record query from application account", "Medium", 0.74, 0.17,
-         "Collection", "T1213 - Data from Information Repositories",
-         "u-maria-chen", "host-pci-db-01", fin_web, pci_db, None),
-        (94, "Splunk", "After-hours access to crown-jewel datastore", "Medium", 0.66, 0.24,
-         "Collection", "T1005 - Data from Local System",
-         "u-maria-chen", "host-pci-db-01", fin_web, pci_db, None),
-        (103, "Darktrace", "Large outbound transfer to rare ASN", "Medium", 0.81, 0.12,
-         "Exfiltration", "T1041 - Exfiltration Over C2 Channel",
-         "u-maria-chen", "host-pci-db-01", pci_db, ext_ip, None),
-        (111, "Symantec DLP", "Regulated data staged to external destination", "Medium", 0.79, 0.13,
-         "Exfiltration", "T1567 - Exfiltration Over Web Service",
-         "u-maria-chen", "host-pci-db-01", pci_db, ext_ip, None),
+def generate_quiet_crown_jewel(_rng: random.Random) -> list[dict]:
+    """Scenario A: four Medium alerts over ~90 minutes."""
+    t1 = DAY + timedelta(hours=2, minutes=10)
+    t2 = DAY + timedelta(hours=2, minutes=38)
+    t3 = DAY + timedelta(hours=3, minutes=5)
+    t4 = DAY + timedelta(hours=3, minutes=40)
+    return [
+        _alert(
+            alert_id="ALRT-A-001",
+            ts=t1,
+            product="Okta",
+            rule="Anomalous VPN login from unusual ASN",
+            severity="Medium",
+            confidence=0.74,
+            fpr=0.18,
+            tactic="Initial Access",
+            technique="T1078 - Valid Accounts",
+            scenario_id="quiet_crown_jewel",
+            user_id="usr_svc_deploy",
+            host_id="prd-app-02",
+            src_ip=f" {A_UNUSUAL_IP} ",
+            dest_ip=APP_IP,
+        ),
+        _alert(
+            alert_id="ALRT-A-002",
+            ts=t2,
+            product="CrowdStrike",
+            rule="Suspicious PowerShell credential harvesting",
+            severity="Medium",
+            confidence=0.79,
+            fpr=0.16,
+            tactic="Credential Access",
+            technique="T1003 - OS Credential Dumping",
+            scenario_id="quiet_crown_jewel",
+            user_id="usr_svc_deploy",
+            host_id="prd-app-02",
+            src_ip=APP_IP,
+            process_hash="c41d2e90ab7712ff0091de44aa18c903",
+        ),
+        _alert(
+            alert_id="ALRT-A-003",
+            ts=t3,
+            product="Darktrace",
+            rule="SSH pivot from application host to billing database",
+            severity="Medium",
+            confidence=0.77,
+            fpr=0.14,
+            tactic="Lateral Movement",
+            technique="T1021.004 - SSH",
+            scenario_id="quiet_crown_jewel",
+            user_id="usr_admin_root",
+            host_id="prd-app-02",
+            src_ip=APP_IP,
+            dest_ip=BILLING_IP,
+        ),
+        _alert(
+            alert_id="ALRT-A-004",
+            ts=t4,
+            product="Darktrace",
+            rule="2.4 GB anomalous encrypted outbound transfer",
+            severity="Medium",
+            confidence=0.83,
+            fpr=0.11,
+            tactic="Exfiltration",
+            technique="T1041 - Exfiltration Over C2 Channel",
+            scenario_id="quiet_crown_jewel",
+            user_id="usr_admin_root",
+            host_id="prd-billing-db-01",
+            src_ip=BILLING_IP,
+            dest_ip=A_EXFIL_IP,
+        ),
     ]
 
-    for i, row in enumerate(sequence, start=1):
-        mins, product, rule, sev, conf, fpr, tactic, tech, user, host, src, dest, phash = row
+
+def generate_ransomware_staging(_rng: random.Random) -> list[dict]:
+    """Scenario B: six-step staging toward Impact on a corp workstation."""
+    times = [
+        DAY + timedelta(hours=14, minutes=5),
+        DAY + timedelta(hours=14, minutes=18),
+        DAY + timedelta(hours=14, minutes=31),
+        DAY + timedelta(hours=14, minutes=44),
+        DAY + timedelta(hours=15, minutes=0),
+        DAY + timedelta(hours=15, minutes=20),
+    ]
+    rows = [
+        (
+            "Okta",
+            "Phishing-driven session from mailbox payload",
+            "Medium",
+            0.68,
+            0.22,
+            "Initial Access",
+            "T1566.001 - Spearphishing Attachment",
+        ),
+        (
+            "CrowdStrike",
+            "User-launched payload execution",
+            "Medium",
+            0.71,
+            0.20,
+            "Execution",
+            "T1204.002 - Malicious File",
+        ),
+        (
+            "CrowdStrike",
+            "PowerShell execution after phishing payload",
+            "High",
+            0.76,
+            0.17,
+            "Execution",
+            "T1059.001 - PowerShell",
+        ),
+        (
+            "CrowdStrike",
+            "LSASS credential dumping",
+            "High",
+            0.82,
+            0.13,
+            "Credential Access",
+            "T1003.001 - LSASS Memory",
+        ),
+        (
+            "Darktrace",
+            "SMB lateral scanning from workstation",
+            "High",
+            0.73,
+            0.19,
+            "Lateral Movement",
+            "T1021.002 - SMB/Windows Admin Shares",
+        ),
+        (
+            "CrowdStrike",
+            "Shadow-copy deletion via vssadmin",
+            "High",
+            0.85,
+            0.10,
+            "Impact",
+            "T1490 - Inhibit System Recovery",
+        ),
+    ]
+    alerts = []
+    for i, ((product, rule, sev, conf, fpr, tactic, tech), ts) in enumerate(
+        zip(rows, times), start=1
+    ):
         alerts.append(
             _alert(
-                rng,
-                alert_id=f"ALRT-BREACH-{i:03d}",
-                ts=T0 + _jitter(rng, mins, 1.2),
+                alert_id=f"ALRT-B-{i:03d}",
+                ts=ts,
                 product=product,
                 rule=rule,
                 severity=sev,
@@ -319,206 +328,279 @@ def generate_true_breach(rng: random.Random) -> list[dict]:
                 fpr=fpr,
                 tactic=tactic,
                 technique=tech,
-                scenario_id="true_breach",
-                user_id=user,
-                host_id=host,
-                src_ip=src,
-                dest_ip=dest,
-                process_hash=phash,
+                scenario_id="ransomware_staging",
+                user_id="usr_jmartinez",
+                host_id="wrk-corp-14",
+                src_ip=WRK_IP,
+                dest_ip="10.30.0.255" if "SMB" in rule else None,
+                process_hash="e7a91c20bb4410de77aa9012cc44f018" if i >= 2 else None,
             )
         )
     return alerts
 
 
-def generate_noisy_scanner(rng: random.Random) -> list[dict]:
-    """Hundreds of Critical alerts against an irrelevant sandbox."""
-    alerts: list[dict] = []
-    scanner_ip = "198.51.100.66"
-    dest_ip = "10.90.1.77"
-    n = 280
+def generate_noisy_false_priority(rng: random.Random) -> list[dict]:
+    """Scenario C: ~120 Critical WAF/IDS hits on a worthless sandbox."""
+    family = [
+        (
+            "WAF",
+            "WAF CVE-2024-21762 exploit attempt",
+            "Initial Access",
+            "T1190 - Exploit Public-Facing Application",
+        ),
+        (
+            "IDS",
+            "IDS CVE-2024-21762 payload detected",
+            "Initial Access",
+            "T1190 - Exploit Public-Facing Application",
+        ),
+        (
+            "WAF",
+            "WAF CVE-2024-21762 traversal variant",
+            "Discovery",
+            "T1083 - File and Directory Discovery",
+        ),
+    ]
+    alerts = []
+    n = 120
+    start = DAY + timedelta(hours=8)
     for i in range(1, n + 1):
-        rule, product, tactic, technique = SCANNER_RULES[i % len(SCANNER_RULES)]
-        minutes = (i / n) * 95
+        product, rule, tactic, technique = family[i % len(family)]
+        minutes = (i / n) * 210
         alerts.append(
             _alert(
-                rng,
-                alert_id=f"ALRT-SCAN-{i:04d}",
-                ts=T0 + timedelta(minutes=minutes + rng.uniform(-0.4, 0.4)),
+                alert_id=f"ALRT-C-{i:04d}",
+                ts=start + timedelta(minutes=minutes + rng.uniform(-0.3, 0.3)),
                 product=product,
                 rule=rule,
                 severity="Critical",
-                confidence=0.93,
-                fpr=0.78,
+                confidence=0.94,
+                fpr=0.85,
                 tactic=tactic,
                 technique=technique,
-                scenario_id="noisy_scanner",
-                host_id="host-sandbox-web-07",
-                src_ip=scanner_ip,
-                dest_ip=dest_ip,
+                scenario_id="noisy_false_priority",
+                host_id="dev-sandbox-04",
+                src_ip=C_SCANNER_IP,
+                dest_ip=SANDBOX_IP,
             )
         )
     return alerts
 
 
-def generate_staging_scan(rng: random.Random) -> list[dict]:
+def generate_background_noise(rng: random.Random) -> list[dict]:
+    """160–180 realistic isolations. Unique entities so they cannot weld."""
     alerts: list[dict] = []
-    dest_ip = "10.40.2.16"
-    for i in range(1, 72):
+    n = 0
+
+    def next_id() -> str:
+        nonlocal n
+        n += 1
+        return f"ALRT-N-{n:03d}"
+
+    def at_hour(hour: float) -> datetime:
+        return DAY + timedelta(hours=hour)
+
+    # Failed logins: 10 tiny pairs, unique users, no shared IPs.
+    for i in range(10):
+        user = f"usr_noise_fail_{i:02d}"
+        src = f"203.0.113.{10 + i}"
+        for j in range(2):
+            alerts.append(
+                _alert(
+                    alert_id=next_id(),
+                    ts=at_hour(1.0 + i * 0.7) + timedelta(minutes=j * 2),
+                    product="Okta",
+                    rule="Failed interactive login",
+                    severity="Low",
+                    confidence=0.40,
+                    fpr=0.80,
+                    tactic="Credential Access",
+                    technique="T1110 - Brute Force",
+                    scenario_id="background_noise",
+                    user_id=user,
+                    src_ip=src,
+                )
+            )
+
+    # Vulnerability scans: 8 clusters of 3, unique scanner + unique target.
+    for i in range(8):
+        src = f"192.0.2.{20 + i}"
+        dest = f"10.71.{i}.10"
+        host = f"wrk-noise-scan-{i:02d}"
+        for j in range(3):
+            alerts.append(
+                _alert(
+                    alert_id=next_id(),
+                    ts=at_hour(4.0 + i * 0.4) + timedelta(minutes=j * 3),
+                    product="Splunk",
+                    rule="Authenticated vulnerability plugin hit",
+                    severity="High",
+                    confidence=0.86,
+                    fpr=0.78,
+                    tactic="Discovery",
+                    technique="T1595 - Active Scanning",
+                    scenario_id="background_noise",
+                    host_id=host,
+                    src_ip=src,
+                    dest_ip=dest,
+                )
+            )
+
+    # Isolated malware detections: 20 unique hosts.
+    for i in range(20):
         alerts.append(
             _alert(
-                rng,
-                alert_id=f"ALRT-STG-{i:03d}",
-                ts=T0 + timedelta(minutes=5 + i * 0.7 + rng.uniform(-0.2, 0.2)),
-                product="Splunk",
-                rule="Nessus plugin hit on staging API",
-                severity="High",
-                confidence=0.88,
-                fpr=0.71,
-                tactic="Discovery",
-                technique="T1595 - Active Scanning",
-                scenario_id="staging_vuln_scan",
-                host_id="host-stg-api-02",
-                src_ip="192.0.2.15",
-                dest_ip=dest_ip,
+                alert_id=next_id(),
+                ts=at_hour(6.0 + i * 0.25),
+                product="CrowdStrike",
+                rule="Unsigned binary in user temp",
+                severity="Low",
+                confidence=0.38,
+                fpr=0.81,
+                tactic="Execution",
+                technique="T1204.002 - Malicious File",
+                scenario_id="background_noise",
+                host_id=f"wrk-noise-mal-{i:02d}",
+                src_ip=f"10.72.{i}.20",
             )
         )
-    return alerts
 
-
-def generate_privileged_anomaly(rng: random.Random) -> list[dict]:
-    """Domain-admin oddity without a completed kill chain."""
-    rows = [
-        (12, "Okta", "Domain admin login from new country", "High", 0.77, 0.19,
-         "Initial Access", "T1078.002 - Domain Accounts",
-         "u-da-okonkwo", "host-ws-admin", "41.86.22.10", None),
-        (19, "CrowdStrike", "Admin workstation unusual process tree", "Medium", 0.62, 0.27,
-         "Execution", "T1059 - Command and Scripting Interpreter",
-         "u-da-okonkwo", "host-ws-admin", "10.30.1.5", None),
-        (31, "Okta", "Privileged session without ticket justification", "Medium", 0.58, 0.31,
-         "Privilege Escalation", "T1078.002 - Domain Accounts",
-         "u-da-okonkwo", "host-dc-01", "10.30.1.5", "10.10.0.11"),
-        (40, "Darktrace", "Admin host queried additional DCs", "Low", 0.54, 0.36,
-         "Discovery", "T1018 - Remote System Discovery",
-         "u-da-okonkwo", "host-dc-01", "10.30.1.5", "10.10.0.11"),
-    ]
-    alerts = []
-    for i, row in enumerate(rows, start=1):
-        mins, product, rule, sev, conf, fpr, tactic, tech, user, host, src, dest = row
+    # Routine administrative scripts: 16 unique admin sessions.
+    for i in range(16):
         alerts.append(
             _alert(
-                rng,
-                alert_id=f"ALRT-PRIV-{i:03d}",
-                ts=T0 + _jitter(rng, mins, 1.0),
-                product=product,
-                rule=rule,
-                severity=sev,
-                confidence=conf,
-                fpr=fpr,
-                tactic=tactic,
-                technique=tech,
-                scenario_id="privileged_anomaly",
-                user_id=user,
-                host_id=host,
-                src_ip=src,
-                dest_ip=dest,
+                alert_id=next_id(),
+                ts=at_hour(11.0 + i * 0.3),
+                product="CrowdStrike",
+                rule="Routine administrative PowerShell",
+                severity="Low",
+                confidence=0.35,
+                fpr=0.77,
+                tactic="Execution",
+                technique="T1059.001 - PowerShell",
+                scenario_id="background_noise",
+                user_id=f"usr_noise_admin_{i:02d}",
+                host_id=f"wrk-noise-adm-{i:02d}",
+                src_ip=f"10.73.{i}.8",
             )
         )
-    return alerts
 
+    # WAF probes against non-sandbox marketing hosts: 15 pairs.
+    for i in range(15):
+        src = f"198.51.100.{80 + i}"
+        dest = f"10.91.{i}.4"
+        host = f"pub-noise-waf-{i:02d}"
+        for j in range(2):
+            alerts.append(
+                _alert(
+                    alert_id=next_id(),
+                    ts=at_hour(16.0 + i * 0.15) + timedelta(minutes=j),
+                    product="F5",
+                    rule="Opportunistic WAF probe",
+                    severity="Medium",
+                    confidence=0.55,
+                    fpr=0.84,
+                    tactic="Initial Access",
+                    technique="T1190 - Exploit Public-Facing Application",
+                    scenario_id="background_noise",
+                    host_id=host,
+                    src_ip=src,
+                    dest_ip=dest,
+                )
+            )
 
-def generate_insider_dlp(rng: random.Random) -> list[dict]:
-    rows = [
-        (22, "Symantec DLP", "HR export to personal USB", "Medium", 0.72, 0.20,
-         "Collection", "T1052.001 - Exfiltration over USB",
-         "u-priya-nair", "host-ws-hr", "10.30.18.22", None),
-        (29, "Symantec DLP", "Confidential roster emailed externally", "Medium", 0.69, 0.23,
-         "Exfiltration", "T1048 - Exfiltration Over Alternative Protocol",
-         "u-priya-nair", "host-ws-hr", "10.30.18.22", "8.8.8.8"),
-        (37, "Splunk", "After-hours HR application access", "Low", 0.51, 0.34,
-         "Collection", "T1213 - Data from Information Repositories",
-         "u-priya-nair", "host-hr-app-01", "10.30.18.22", "10.20.9.40"),
-        (48, "Darktrace", "Unusual volume from HR workstation", "Medium", 0.63, 0.26,
-         "Exfiltration", "T1041 - Exfiltration Over C2 Channel",
-         "u-priya-nair", "host-ws-hr", "10.30.18.22", "198.51.100.20"),
-    ]
-    alerts = []
-    for i, row in enumerate(rows, start=1):
-        mins, product, rule, sev, conf, fpr, tactic, tech, user, host, src, dest = row
+    # Brute-force bursts: 3 users × 8 attempts (dedup to 3 survivors).
+    for i in range(3):
+        user = f"usr_noise_brute_{i:02d}"
+        src = f"203.0.113.{80 + i}"
+        for j in range(8):
+            alerts.append(
+                _alert(
+                    alert_id=next_id(),
+                    ts=at_hour(18.0 + i) + timedelta(minutes=j),
+                    product="Okta",
+                    rule="Password-spray remnant",
+                    severity="Low",
+                    confidence=0.42,
+                    fpr=0.83,
+                    tactic="Credential Access",
+                    technique="T1110.003 - Password Spraying",
+                    scenario_id="background_noise",
+                    user_id=user,
+                    src_ip=src,
+                )
+            )
+
+    # Benign PowerShell: 12 unique workstations.
+    for i in range(12):
         alerts.append(
             _alert(
-                rng,
-                alert_id=f"ALRT-INS-{i:03d}",
-                ts=T0 + _jitter(rng, mins, 1.0),
-                product=product,
-                rule=rule,
-                severity=sev,
-                confidence=conf,
-                fpr=fpr,
-                tactic=tactic,
-                technique=tech,
-                scenario_id="insider_dlp",
-                user_id=user,
-                host_id=host,
-                src_ip=src,
-                dest_ip=dest,
+                alert_id=next_id(),
+                ts=at_hour(12.5 + i * 0.2),
+                product="CrowdStrike",
+                rule="Benign signed PowerShell management script",
+                severity="Low",
+                confidence=0.33,
+                fpr=0.82,
+                tactic="Execution",
+                technique="T1059.001 - PowerShell",
+                scenario_id="background_noise",
+                host_id=f"wrk-noise-ps-{i:02d}",
+                src_ip=f"10.74.{i}.14",
             )
         )
-    return alerts
 
-
-def generate_isolated_noise(rng: random.Random) -> list[dict]:
-    templates = [
-        ("CrowdStrike", "Unsigned binary in user temp", "Low", 0.44, 0.55,
-         "Execution", "T1204 - User Execution",
-         "u-helpdesk-lee", "host-dev-build-03", "10.50.3.9", None),
-        ("Okta", "Single failed password spray remnant", "Low", 0.40, 0.62,
-         "Credential Access", "T1110 - Brute Force",
-         "u-contractor-kim", None, "203.0.113.80", None),
-        ("F5", "One-off 404 flood from crawler", "Low", 0.38, 0.70,
-         "Discovery", "T1595 - Active Scanning",
-         None, "host-sandbox-api-03", "203.0.113.90", "10.90.1.33"),
-        ("Splunk", "Expired service account login", "Medium", 0.50, 0.41,
-         "Initial Access", "T1078.003 - Local Accounts",
-         "u-svc-backup", "host-jump-01", "10.10.1.8", None),
-        ("CrowdStrike", "Browser crash dump false positive", "Low", 0.33, 0.74,
-         "Execution", "T1204.002 - Malicious File",
-         "u-helpdesk-lee", "host-dev-build-03", "10.50.3.9", None),
-    ]
-    alerts = []
-    for i in range(1, 36):
-        product, rule, sev, conf, fpr, tactic, tech, user, host, src, dest = templates[i % len(templates)]
+    # Authentication anomalies: 12 unique users.
+    for i in range(12):
         alerts.append(
             _alert(
-                rng,
-                alert_id=f"ALRT-NOISE-{i:03d}",
-                ts=T0 + timedelta(minutes=rng.uniform(0, 140)),
-                product=product,
-                rule=f"{rule} #{i}",
-                severity=sev,
-                confidence=conf,
-                fpr=fpr,
-                tactic=tactic,
-                technique=tech,
-                scenario_id="isolated_noise",
-                user_id=user,
-                host_id=host,
-                src_ip=src,
-                dest_ip=dest,
+                alert_id=next_id(),
+                ts=at_hour(20.0 + i * 0.15),
+                product="Okta",
+                rule="Low-confidence authentication anomaly",
+                severity="Low",
+                confidence=0.36,
+                fpr=0.76,
+                tactic="Initial Access",
+                technique="T1078 - Valid Accounts",
+                scenario_id="background_noise",
+                user_id=f"usr_noise_auth_{i:02d}",
+                src_ip=f"198.51.100.{40 + i}",
             )
         )
+
+    # Low-confidence network detections: 12 unique pairs.
+    for i in range(12):
+        alerts.append(
+            _alert(
+                alert_id=next_id(),
+                ts=at_hour(21.0 + i * 0.15),
+                product="Darktrace",
+                rule="Low-confidence beacon-like traffic",
+                severity="Low",
+                confidence=0.28,
+                fpr=0.86,
+                    tactic="Discovery",
+                technique="T1046 - Network Service Discovery",
+                scenario_id="background_noise",
+                host_id=f"wrk-noise-ndr-{i:02d}",
+                src_ip=f"10.75.{i}.30",
+                dest_ip=f"8.8.8.8",
+            )
+        )
+
+    assert 160 <= len(alerts) <= 180, len(alerts)
     return alerts
 
 
 def generate_dataset(seed: int = RANDOM_SEED) -> tuple[list[dict], list[dict], list[dict]]:
     rng = random.Random(seed)
-    alerts = []
-    alerts.extend(generate_true_breach(rng))
-    alerts.extend(generate_noisy_scanner(rng))
-    alerts.extend(generate_staging_scan(rng))
-    alerts.extend(generate_privileged_anomaly(rng))
-    alerts.extend(generate_insider_dlp(rng))
-    alerts.extend(generate_isolated_noise(rng))
-    alerts.sort(key=lambda a: a["time"])
+    alerts: list[dict] = []
+    alerts.extend(generate_quiet_crown_jewel(rng))
+    alerts.extend(generate_ransomware_staging(rng))
+    alerts.extend(generate_noisy_false_priority(rng))
+    alerts.extend(generate_background_noise(rng))
+    alerts.sort(key=lambda a: (a["time"], a["id"]))
     return ASSETS, IDENTITIES, alerts
 
 
@@ -534,10 +616,14 @@ def write_dataset(seed: int = RANDOM_SEED) -> dict[str, int]:
     for alert in alerts:
         sid = alert["scenario_id"]
         counts[sid] = counts.get(sid, 0) + 1
+    span_h = (
+        datetime.fromisoformat(alerts[-1]["time"]) - datetime.fromisoformat(alerts[0]["time"])
+    ).total_seconds() / 3600.0
     return {
         "assets": len(assets),
         "identities": len(identities),
         "alerts": len(alerts),
+        "span_hours": round(span_h, 2),
         **{f"scenario_{k}": v for k, v in sorted(counts.items())},
     }
 

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from engine.normalizer import deduplicate_alerts, normalize_and_enrich
+from engine.normalizer import (
+    deduplicate_alerts,
+    normalize_and_enrich,
+    normalize_and_enrich_report,
+    normalize_ip,
+    parse_jsonl,
+)
 from engine.schemas import AlertEntities, EnrichedAlert
 
 
@@ -87,3 +93,40 @@ def test_vendor_payload_normalizes_then_dedups() -> None:
     assert len(collapsed) == 1
     assert collapsed[0].source_product == "WAF"
     assert collapsed[0].event_count == 5
+
+
+def test_normalize_ip_strips_and_canonicalizes() -> None:
+    assert normalize_ip(" 193.32.162.88 ") == "193.32.162.88"
+    assert normalize_ip("10.20.8.22/32") == "10.20.8.22"
+
+
+def test_unknown_identity_does_not_drop_the_alert() -> None:
+    raw = [
+        {
+            "id": "UNK-1",
+            "time": "2026-03-18T02:10:00+00:00",
+            "vendor": "Okta",
+            "signature": "Anomalous VPN login from unusual ASN",
+            "sev": "Medium",
+            "confidence": 0.7,
+            "fp_rate": 0.2,
+            "tactic": "Initial Access",
+            "technique": "T1078",
+            "user_id": "usr_unknown_contractor",
+            "src_ip": " 203.0.113.9 ",
+        }
+    ]
+    enriched, errors = normalize_and_enrich_report(raw, [], [])
+    assert errors == []
+    assert len(enriched) == 1
+    assert enriched[0].alert_id == "UNK-1"
+    assert enriched[0].original_alert_id == "UNK-1"
+    assert enriched[0].entities.src_ip == "203.0.113.9"
+    assert any(gap.startswith("unknown_user:") for gap in enriched[0].context_gaps)
+
+
+def test_parse_jsonl_skips_malformed_lines() -> None:
+    rows, errors = parse_jsonl(["{bad", '{"id": "A", "ok": true}', ""])
+    assert len(rows) == 1
+    assert rows[0]["id"] == "A"
+    assert errors
