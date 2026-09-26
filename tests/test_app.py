@@ -70,6 +70,8 @@ def test_opening_case_replaces_queue_with_workspace() -> None:
     )
     assert "Destructive" not in blob
     assert "Why the legacy SIEM got this wrong" not in blob
+    assert "Privilege Escalation" in blob
+    assert "Lateral Movement" in blob
 
 
 def test_back_to_queue_preserves_filters() -> None:

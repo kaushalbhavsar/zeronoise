@@ -170,12 +170,20 @@ input:focus-visible, textarea:focus-visible {
   color: var(--zn-muted); font-size: 0.82rem;
 }
 .tl-id { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.8rem; color: #c5d2e0; }
-.kc { display: flex; gap: 0.35rem; flex-wrap: wrap; margin: 0.45rem 0 0.8rem 0; }
-.kc-step {
-  flex: 1 1 7rem; text-align: center; font-size: 0.75rem; padding: 0.45rem 0.3rem;
-  border: 1px solid var(--zn-border); border-radius: 8px; color: #5d7088; background: #0e1622;
+.kc-vert { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.35rem 0 0.8rem 0; }
+.kc-row {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.55rem 0.8rem; border: 1px solid var(--zn-border);
+  border-radius: 8px; background: #0e1622; color: #5d7088;
 }
-.kc-step.on { border-color: #3b82f6; color: #e8eef7; background: #152a4a; }
+.kc-row.on { border-color: #3b82f6; color: #e8eef7; background: #152a4a; }
+.kc-index {
+  font-variant-numeric: tabular-nums; font-feature-settings: "tnum";
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem; min-width: 1.8rem; color: inherit;
+}
+.kc-label { flex: 1 1 auto; font-size: 0.95rem; line-height: 1.35; overflow: visible; }
+.kc-state { font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
 .rank-up { background: #102018; }
 .rank-down { background: #2a1212; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }

@@ -64,15 +64,6 @@ def driver_chart(card: IncidentCard) -> go.Figure:
     return fig
 
 
-def kill_chain_html(tactics: list[str]) -> str:
-    present = set(tactics)
-    cells = "".join(
-        f"<div class='kc-step {'on' if name in present else ''}'>{name}</div>"
-        for name in KILL_CHAIN
-    )
-    return f"<div class='kc'>{cells}</div>"
-
-
 def render_case_header(item: ScoredIncident, card: IncidentCard, now: datetime) -> None:
     record = case(item.incident.incident_id)
     pri = priority(item.risk.risk_score)
@@ -259,24 +250,34 @@ def render_timeline_tab(item: ScoredIncident, card: IncidentCard) -> None:
 
 
 def render_attack_tab(item: ScoredIncident, card: IncidentCard) -> None:
-    st.markdown(kill_chain_html(card.tactics), unsafe_allow_html=True)
-    st.caption("Highlighted stages were observed on this incident. Muted stages were not.")
     present = set(card.tactics)
-    for stage in KILL_CHAIN:
+    observed = [name for name in KILL_CHAIN if name in present]
+    if observed:
+        st.caption("Observed path: " + " → ".join(observed))
+    else:
+        st.caption("No mapped ATT&CK stages on this incident.")
+    st.caption("Full stage names are listed below. Highlighted rows were observed; muted rows were not.")
+
+    for index, stage in enumerate(KILL_CHAIN, start=1):
         supporting = [
             alert
             for alert in item.incident.alerts
             if alert.mitre_tactic == stage
         ]
         if stage in present:
-            st.markdown(f"**{stage}** · observed")
-            for alert in supporting:
-                st.write(
-                    f"- `{alert.alert_id}` · {alert.source_product} · {alert.rule_name} · "
-                    f"{alert.entities.user_id or '—'} / {alert.entities.host_id or '—'}"
+            with st.container(border=True):
+                st.markdown(
+                    f"**{index:02d}  {stage}** · observed · "
+                    f"{len(supporting)} supporting event{'s' if len(supporting) != 1 else ''}"
                 )
+                for alert in supporting:
+                    st.write(
+                        f"`{alert.alert_id}` · {alert.source_product} · {alert.rule_name} · "
+                        f"{alert.entities.user_id or '—'} / {alert.entities.host_id or '—'}"
+                    )
         else:
-            st.caption(f"{stage} · not observed")
+            st.caption(f"{index:02d}  {stage} · not observed")
+
     techniques = item.incident.unique_techniques or card.techniques
     st.markdown("**MITRE techniques**")
     if techniques:
