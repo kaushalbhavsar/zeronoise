@@ -186,3 +186,201 @@ def correlation_evidence(item: ScoredIncident) -> list[dict[str, str]]:
             }
         )
     return rows
+
+
+def grouped_correlation_evidence(item: ScoredIncident) -> list[dict[str, object]]:
+    """One pair of alerts with every observed relationship."""
+    groups: dict[tuple[str, str], list[str]] = {}
+    order: list[tuple[str, str]] = []
+    for row in correlation_evidence(item):
+        pair = (row["from"], row["to"])
+        if pair not in groups:
+            groups[pair] = []
+            order.append(pair)
+        if row["reason"] not in groups[pair]:
+            groups[pair].append(row["reason"])
+    return [{"from": left, "to": right, "reasons": groups[(left, right)]} for left, right in order]
+
+
+ACTION_GROUPS = ("Validate", "Contain", "Preserve", "Recover")
+
+
+def group_recommended_actions(actions: list[str]) -> dict[str, list[str]]:
+    """Bucket analyst steps. Recording completion is not executing infra."""
+    buckets: dict[str, list[str]] = {name: [] for name in ACTION_GROUPS}
+    for action in actions:
+        lower = action.lower()
+        if any(token in lower for token in ("preserve", "telemetry", "forensic", "snapshot")):
+            buckets["Preserve"].append(action)
+        elif any(token in lower for token in ("recover", "restore", "reimage")):
+            buckets["Recover"].append(action)
+        elif any(
+            token in lower
+            for token in (
+                "review",
+                "validate",
+                "authentication",
+                "high-fp",
+                "cmdb",
+                "before paging",
+                "before closing",
+            )
+        ):
+            buckets["Validate"].append(action)
+        else:
+            buckets["Contain"].append(action)
+    return buckets
+
+
+def urgency_sentence(item: ScoredIncident) -> str:
+    """One factual sentence for why this card is at the top of the queue."""
+    tactics = set(item.incident.unique_tactics)
+    badges = context_badges(item)
+    asset = item.incident.unique_hosts[0] if item.incident.unique_hosts else "an unresolved host"
+    if "Exfiltration" in tactics and "Crown Jewel" in badges:
+        return f"Observed exfiltration involving {asset}, a crown-jewel production system."
+    if "Impact" in tactics:
+        return f"Destructive activity is in progress on {asset}."
+    if "Lateral Movement" in tactics and "Credential Access" in tactics:
+        return f"Credential access is followed by lateral movement on {asset}."
+    if "High FP Rule" in badges and "Sandbox" in badges:
+        return f"High-volume Critical alerts are concentrated on sandbox host {asset}."
+    if tactics:
+        return f"Observed {' → '.join(item.incident.unique_tactics)} on {asset}."
+    return f"{item.incident.total_event_count} raw events collapsed into this incident."
+
+
+def badge_tone(name: str) -> str:
+    """Production is context, not a healthy state."""
+    if name in {"Crown Jewel", "Tier-0 Admin", "Exfiltration", "Impact"}:
+        return "hot"
+    if name in {"High FP Rule", "Sandbox"}:
+        return "warn"
+    return "ctx"
+
+
+def review_reduction_label(raw_alert_count: int, incident_count: int) -> str:
+    """Volume compression of alerts → incidents. Not measured fatigue."""
+    if raw_alert_count <= 0:
+        return "No alerts in this snapshot"
+    pct = round(100.0 * (1.0 - incident_count / raw_alert_count))
+    return f"{pct}% fewer items to review"
+
+
+def significant_rank_moves(
+    items: list[ScoredIncident],
+    *,
+    min_abs_delta: int = 5,
+) -> list[ScoredIncident]:
+    """Incidents whose AI rank differs from legacy by at least min_abs_delta."""
+    moved: list[ScoredIncident] = []
+    for item in items:
+        delta = rank_delta(item.risk_rank, item.naive_siem_rank)
+        if delta is not None and abs(delta) >= min_abs_delta:
+            moved.append(item)
+    moved.sort(key=lambda item: (-abs(rank_delta(item.risk_rank, item.naive_siem_rank) or 0), item.risk_rank or 0))
+    return moved
+
+
+def parse_timeline_line(line: str) -> dict[str, str]:
+    """Split a deterministic timeline line into clock, alert id, tactic, detail."""
+    head, sep, tail = line.partition(" — ")
+    if not sep:
+        return {"clock": "", "alert_id": "", "tactic": "", "detail": line}
+    if "]" not in head:
+        return {"clock": "", "alert_id": "", "tactic": "", "detail": line}
+    prefix, tactic = head.rsplit("]", 1)
+    clock = prefix.split("[")[0].strip()
+    alert_id = prefix.split("[", 1)[1].rstrip("]").strip()
+    return {
+        "clock": clock,
+        "alert_id": alert_id,
+        "tactic": tactic.strip(),
+        "detail": tail.strip(),
+    }
+
+
+def exposed_assets(item: ScoredIncident) -> list[str]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for alert in item.incident.alerts:
+        for asset in (alert.asset, alert.dest_asset):
+            if not asset or asset.host_id in seen:
+                continue
+            seen.add(asset.host_id)
+            lines.append(
+                f"{asset.hostname} ({asset.host_id}) · {asset.environment} · "
+                f"{asset.data_sensitivity} · crit {asset.business_criticality}"
+            )
+    if not lines:
+        for host in item.incident.unique_hosts:
+            lines.append(f"{host} · environment not resolved in CMDB")
+    return lines
+
+
+def exposed_identities(item: ScoredIncident) -> list[str]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for alert in item.incident.alerts:
+        ident = alert.identity
+        if not ident or ident.user_id in seen:
+            continue
+        seen.add(ident.user_id)
+        lines.append(f"{ident.user_id} · {ident.department} · {ident.privilege_tier}")
+    if not lines:
+        for user in item.incident.unique_users:
+            lines.append(f"{user} · privilege not resolved in IAM")
+    return lines
+
+
+def why_this_matters(item: ScoredIncident) -> str:
+    """Inferred assessment. Not an observed fact and not a business-impact estimate."""
+    badges = set(context_badges(item))
+    tactics = set(item.incident.unique_tactics)
+    if "Exfiltration" in tactics and "Crown Jewel" in badges:
+        return (
+            "Assessment: observed exfiltration involves a crown-jewel system, "
+            "so data exposure is the primary concern. Confirm destination and volume "
+            "on the cited timeline before treating this as confirmed theft."
+        )
+    if "Impact" in tactics:
+        return (
+            "Assessment: Impact-stage activity can destroy recoverability. "
+            "The mapped sequence supports urgency; confirm the host is still reachable."
+        )
+    if "High FP Rule" in badges and "Sandbox" in badges:
+        return (
+            "Assessment: volume is high but the host is sandbox-only and the rule "
+            "has a high historical false-positive rate. This may be noise."
+        )
+    if "Lateral Movement" in tactics and "Credential Access" in tactics:
+        return (
+            "Assessment: credential access followed by lateral movement is consistent "
+            "with an expanding intrusion. Privilege and destination still need confirmation."
+        )
+    if "Crown Jewel" in badges or "PCI/PII" in badges:
+        return (
+            "Assessment: a sensitive asset is in scope, so the incident outranks "
+            "volume-only noise even when vendor severity is moderate."
+        )
+    return (
+        "Assessment: ranking reflects fidelity, kill-chain depth, and asset or "
+        "identity context — not raw alert count. Uncertainty remains until "
+        "independent sensors or later stages appear."
+    )
+
+
+def evidence_summary(item: ScoredIncident) -> str:
+    sensors = ", ".join(item.incident.unique_products) or "no mapped sensors"
+    tactics = " → ".join(item.incident.unique_tactics) or "no mapped tactics"
+    return (
+        f"{len(item.incident.alerts)} deduplicated events from {sensors} "
+        f"({item.incident.total_event_count} raw). Mapped sequence: {tactics}."
+    )
+
+
+def next_recommended_action(card: IncidentCard) -> str:
+    actions = card.recommended_actions or card.containment
+    if actions:
+        return actions[0]
+    return "Review the timeline and assign an owner before closing."

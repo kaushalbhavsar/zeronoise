@@ -3,11 +3,17 @@ from __future__ import annotations
 from config import ALERTS_PATH, CMDB_PATH, IAM_PATH
 from engine.pipeline import run_pipeline
 from engine.presentation import (
+    badge_tone,
     context_badges,
     correlation_evidence,
+    grouped_correlation_evidence,
+    group_recommended_actions,
+    parse_timeline_line,
     rank_delta,
     rank_delta_label,
     raw_alert_ids,
+    review_reduction_label,
+    significant_rank_moves,
 )
 from engine.risk_scorer import score_incident, score_incidents
 from tests.test_risk_scoring import _breach_incident, _scanner_incident
@@ -109,3 +115,65 @@ def test_seed_pipeline_actions_name_real_crown_jewel_entities() -> None:
     assert "Review authentication activity associated with usr_svc_deploy." in crown.recommended_actions
     assert "involved hosts" not in blob
     assert "involved accounts" not in blob
+
+
+def test_badge_tone_treats_production_as_context() -> None:
+    assert badge_tone("Production") == "ctx"
+    assert badge_tone("Crown Jewel") == "hot"
+    assert badge_tone("Sandbox") == "warn"
+
+
+def test_review_reduction_is_volume_not_fatigue() -> None:
+    assert review_reduction_label(300, 111) == "63% fewer items to review"
+
+
+def test_grouped_correlation_collapses_pair_reasons() -> None:
+    breach = score_incident(_breach_incident())
+    grouped = grouped_correlation_evidence(breach)
+    raw = correlation_evidence(breach)
+    assert grouped
+    assert len(grouped) <= len(raw)
+    for row in grouped:
+        assert row["from"]
+        assert row["to"]
+        assert row["reasons"]
+
+
+def test_action_groups_cover_validate_contain_preserve_recover() -> None:
+    grouped = group_recommended_actions(
+        [
+            "Review authentication activity associated with usr_svc_deploy.",
+            "Isolate prd-app-02 from the network.",
+            "Preserve EDR telemetry before remediation.",
+            "Restore wrk-corp-14 from last known-good backup.",
+        ]
+    )
+    assert grouped["Validate"]
+    assert grouped["Contain"]
+    assert grouped["Preserve"]
+    assert grouped["Recover"]
+
+
+def test_parse_timeline_line_extracts_clock_and_alert() -> None:
+    parsed = parse_timeline_line(
+        "09:12  [ALRT-A-001] Initial Access — Anomalous VPN login for usr_svc_deploy on prd-app-02"
+    )
+    assert parsed["clock"] == "09:12"
+    assert parsed["alert_id"] == "ALRT-A-001"
+    assert parsed["tactic"] == "Initial Access"
+    assert "Anomalous VPN login" in parsed["detail"]
+
+
+def test_significant_rank_moves_include_promoted_exfil() -> None:
+    result = run_pipeline(str(ALERTS_PATH), str(CMDB_PATH), str(IAM_PATH), use_llm=False)
+    moved = significant_rank_moves(result.risk_ranked, min_abs_delta=5)
+    assert moved
+    crown = next(
+        item
+        for item in result.risk_ranked
+        if "prd-billing-db-01" in item.incident.unique_hosts
+        or "usr_admin_root" in item.incident.unique_users
+    )
+    assert crown.risk_rank == 2
+    assert (crown.naive_siem_rank or 0) >= 10
+    assert crown in moved
