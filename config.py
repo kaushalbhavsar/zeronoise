@@ -125,15 +125,33 @@ PRIVILEGE_WEIGHT: dict[str, float] = {
     "tier_0_domain_admin": 1.8,
 }
 
+# Blast radius / context multiplier C. Configurable so the demo can
+# emphasize crown-jewel asset impact over identity without code changes.
+BLAST_ASSET_WEIGHT = 0.65
+BLAST_IDENTITY_WEIGHT = 0.35
+
 # Unknown CMDB/IAM context is not treated as crown-jewel or as zero.
 NEUTRAL_IMPACT = 0.90
 NEUTRAL_PRIVILEGE = 0.70
-# No observed identity: floor so the B×K×I product does not collapse to 0.
 UNOBSERVED_PRIVILEGE = 0.50
 
-# Maximum fraction of the pre-noise product that bursty, high-FPR
-# incidents can lose. Noise never increases rank.
-NOISE_DISCOUNT_CAP = 0.45
+# Counterfactual ablation baselines (spec §28).
+FIDELITY_BASELINE = 2.0  # minimum incident fidelity: one Low, conf=1, FPR=0, n=1
+PROGRESSION_BASELINE = 1.0
+BLAST_BASELINE = 1.0
+
+# Saturating map RawRisk → [0, 100]: 100 * (1 - exp(-RawRisk / SCALE)).
+# Chosen on seed=42 so the quiet crown-jewel sits in the P1 band and
+# isolated noise stays in the single digits. Not assigned per scenario.
+RISK_SCALE = 45.0
+
+# Attribution factor labels. Order is part of the public card schema.
+ATTRIBUTION_FACTORS: tuple[str, ...] = (
+    "Alert Fidelity",
+    "Kill-Chain Progression",
+    "Blast Radius",
+    "FP/Noise Suppression",
+)
 
 # Aliases used by the explainer when picking the highest-sensitivity asset.
 ENV_SCORE = ENVIRONMENT_WEIGHT

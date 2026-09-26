@@ -10,12 +10,12 @@ The core is deterministic and works fully offline. An LLM, if you turn it on, ma
 
 On the seeded demo dataset (`RANDOM_SEED = 42`, ~300 alerts over 24 hours):
 
-| Queue | Rank 1 | Quiet crown-jewel (4 Medium alerts) | Ransomware staging |
+| Queue | Rank 1 | Rank 2 | Sandbox scanner (120 Critical) |
 | --- | --- | --- | --- |
-| Legacy SIEM (severity × volume) | 120 Critical WAF/IDS hits on `dev-sandbox-04` | Buried | Mid-pack |
-| Risk-based incidents | `prd-billing-db-01` exfil via `usr_admin_root` | **#1** | **#2** |
+| Legacy SIEM (severity × volume) | Scanner on `dev-sandbox-04` (1800) | Ransomware staging | **#1** |
+| Risk-based incidents | 6-stage Impact on `wrk-corp-14` (88.3) | Crown-jewel exfil via `usr_admin_root` (80.8) | **#3** (30.9) |
 
-The sandbox cluster is not hard-coded to a low risk rank. High FPR, sandbox/public/crit-1 context, and no kill-chain progression suppress it naturally.
+Those ranks come from `RawRisk = B × K × C`, not from `scenario_id`. The scanner is suppressed by a short kill chain, sandbox/public/crit-1 context, and FPR 0.85. The 4-Medium crown-jewel incident still outranks it; the 6-stage High ransomware chain has higher fidelity B, so it leads the risk queue.
 
 Alert fatigue drops because hundreds of raw alerts collapse into a short incident queue, and the item at the top is the one that actually matters.
 
@@ -42,7 +42,7 @@ data/generate_synthetic_data.py   Seeded CMDB, IAM, and alert stream
 engine/schemas.py                 Pydantic v2 models
 engine/normalizer.py              Vendor-field mapping, CMDB/IAM enrich, dedup
 engine/correlator.py              Entity + time union-find (no scenario_id)
-engine/risk_scorer.py             B × K × I risk + traceable attribution
+engine/risk_scorer.py             B × K × C risk + ablation attribution
 engine/explainer.py               Deterministic cards; optional LLM prose
 engine/pipeline.py                End-to-end run + fatigue metrics
 app.py                            Interactive SOC queue
@@ -78,20 +78,24 @@ B = min(Σ fidelity_a over unique (rule_name, mitre_tactic), 35)
 K = 1 + 0.35×max(0, m-1) + 0.20×max(0, s-1)
     + 0.50×int(Exfiltration ∈ tactics or Impact ∈ tactics)
 
-asset_score = 0.35×env + 0.35×data + 0.30×criticality   (≈ 0.4–2.0)
-P_priv      = highest involved privilege weight
-I           = asset_score × P_priv
+asset_risk = 0.35×env + 0.35×data + 0.30×criticality   (≈ 0.4–2.0)
+P_priv     = highest involved privilege weight
+C          = 0.65×asset_risk + 0.35×P_priv     (configurable)
 
-risk = min(100, B × K × I × (1 - 0.45 × noise))
+RawRisk    = B × K × C
+risk_score = 100 × (1 − exp(−RawRisk / 45))
 ```
+
+`RISK_SCALE = 45` was chosen on the seed-42 dataset so multi-stage incidents saturate into the 70–90 band and isolated noise stays in the single digits. RawRisk is not shown on the analyst card. Scores are not assigned per `scenario_id`.
+
+Attribution is **counterfactual ablation**, not an independent split of B, K, and C. Each factor is replaced with its baseline (B → 2.0, K → 1.0, C → 1.0, FPR → 0) and the score drop (or FP-suppression lift) is renormalized to integer percents that sum to 100.
 
 | Factor | What it measures |
 | --- | --- |
-| Threat fidelity **B** | Vendor severity × confidence × (1 − 0.7×FPR), unique (rule, tactic) only, log volume |
+| Alert Fidelity **B** | Severity × confidence × (1 − 0.7×FPR), unique (rule, tactic) only, log volume |
 | Kill-chain **K** | Distinct ATT&CK tactics, distinct sensors, Exfiltration/Impact completion |
-| Asset impact | Highest-risk touched asset (`sandbox` 0.4 … `prod` 1.4; `public` 0.5 … `crown_jewel_pii_pci` 2.0) |
-| Identity **P_priv** | Highest-risk identity (`standard_user` 0.5 … `tier_0_domain_admin` 1.8) |
-| Noise discount | cap 0.45; bursty, high-FPR, single-stage piles (scanners) |
+| Blast radius **C** | Highest-risk asset (0.65) and highest-risk identity (0.35) |
+| FP/Noise suppression | How much the score rises if every alert is recomputed with FPR = 0 |
 
 Volume has strongly diminishing returns. 120 identical Critical alerts are not 120 attack stages.
 
@@ -105,9 +109,9 @@ Disabled by default (`LLM_ENABLED = False`). When enabled, the model may rewrite
 
 | ID | Story | Alerts | Expected rank |
 | --- | --- | --- | --- |
-| A `quiet_crown_jewel` | VPN → PowerShell creds → SSH pivot → 2.4 GB exfil on `prd-billing-db-01` | 4 Medium / ~90 min | Risk **#1**, legacy buried |
-| B `ransomware_staging` | Phish → exec → LSASS → discovery → SMB scan → shadow-copy delete on `wrk-corp-14` | 6 Medium/High | Risk **#2** |
-| C `noisy_false_priority` | CVE-2024-21762 WAF/IDS flood on `dev-sandbox-04` | 120 Critical | Legacy **#1**, risk deprioritized by the formula |
+| A `quiet_crown_jewel` | VPN → PowerShell creds → SSH pivot → 2.4 GB exfil on `prd-billing-db-01` | 4 Medium / ~90 min | Risk **#2**, legacy buried |
+| B `ransomware_staging` | Phish → exec → LSASS → discovery → SMB scan → shadow-copy delete on `wrk-corp-14` | 6 Medium/High | Risk **#1** |
+| C `noisy_false_priority` | CVE-2024-21762 WAF/IDS flood on `dev-sandbox-04` | 120 Critical | Legacy **#1**, risk **#3** |
 | Background | Failed logins, vuln scans, isolated malware, admin scripts, WAF probes, brute-force bursts | 170 | Must not weld into a giant incident |
 
 The normalizer parses JSONL, canonicalizes timestamps and IPs, resolves host IP ↔ host ID, enriches from CMDB/IAM, and keeps going when a row is malformed or an asset/user is unknown (neutral context weights).
@@ -127,4 +131,4 @@ The normalizer parses JSONL, canonicalizes timestamps and IPs, resolves host IP 
 pytest tests/test_deduplication.py tests/test_correlation.py tests/test_risk_scoring.py tests/test_acceptance.py -q
 ```
 
-Acceptance checks risk #1 / #2 for scenarios A and B, legacy #1 for C, measurable fatigue reduction, isolated background noise, determinism under seed 42, unused `scenario_id`, and that a malformed row does not fail the pipeline.
+Acceptance checks the seed-42 ranking that the formula produces (B then A on risk, C on legacy), measurable fatigue reduction, isolated background noise, determinism, unused `scenario_id`, and that a malformed row does not fail the pipeline.

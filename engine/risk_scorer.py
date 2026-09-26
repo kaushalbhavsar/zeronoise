@@ -1,24 +1,15 @@
-"""Deterministic incident risk scoring and driver attribution.
+"""Deterministic incident risk scoring and counterfactual attribution.
 
 The real score operates on deduplicated, correlated incidents:
 
-    fidelity_a = severity_weight
-                 × confidence
-                 × (1 - 0.7 × FPR)
-                 × (1 + 0.10 × log1p(event_count - 1))
-
     B = min(Σ fidelity_a over unique (rule_name, mitre_tactic), 35)
+    K = 1 + 0.35×max(0, m-1) + 0.20×max(0, s-1) + 0.50×completion
+    C = BLAST_ASSET_WEIGHT × asset_risk + BLAST_IDENTITY_WEIGHT × P_priv
+    RawRisk = B × K × C
+    risk_score = 100 × (1 − exp(−RawRisk / RISK_SCALE))
 
-    K = 1 + 0.35×max(0, m-1) + 0.20×max(0, s-1)
-        + 0.50×int(Exfiltration or Impact)
-
-    asset_score = 0.35×env + 0.35×data + 0.30×criticality   (≈ 0.4–2.0)
-    P_priv      = highest involved privilege weight
-    I           = asset_score × P_priv
-
-    risk = min(100, B × K × I × (1 - NOISE_DISCOUNT_CAP × noise))
-
-Noise is an explicit suppressor and can only reduce the product.
+RawRisk is not shown to the analyst. Attribution is counterfactual
+ablation, not an independent percentage split of B, K, and C.
 scenario_id is never read. LLM state is never read.
 """
 
@@ -33,21 +24,27 @@ from config import (
     ASSET_ENV_BLEND,
     ASSET_SCORE_MAX,
     ASSET_SCORE_MIN,
+    ATTRIBUTION_FACTORS,
+    BLAST_ASSET_WEIGHT,
+    BLAST_BASELINE,
+    BLAST_IDENTITY_WEIGHT,
     COMPLETION_TACTICS,
     CRITICALITY_WEIGHT,
     DATA_WEIGHT,
     ENVIRONMENT_WEIGHT,
+    FIDELITY_BASELINE,
     FIDELITY_CAP,
     FIDELITY_FPR_COEFF,
     FIDELITY_VOLUME_COEFF,
     NEUTRAL_IMPACT,
     NEUTRAL_PRIVILEGE,
-    NOISE_DISCOUNT_CAP,
     PRIVILEGE_WEIGHT,
     PROGRESSION_BASE,
+    PROGRESSION_BASELINE,
     PROGRESSION_COMPLETION_BONUS,
     PROGRESSION_SENSOR_COEFF,
     PROGRESSION_TACTIC_COEFF,
+    RISK_SCALE,
     SEVERITY_WEIGHTS,
     UNOBSERVED_PRIVILEGE,
 )
@@ -62,11 +59,17 @@ from engine.schemas import (
 )
 
 FORMULA = (
-    "risk = min(100, B × K × I × (1 - {cap} × noise)), "
-    "I = asset_score × P_priv, "
+    "risk_score = 100 × (1 − exp(−RawRisk / {scale})), "
+    "RawRisk = B × K × C, "
+    "C = {wa}×asset_risk + {wp}×P_priv, "
     "B = min(Σ fidelity_a over unique (rule, tactic), {cap_b}), "
     "K = 1 + 0.35×max(0,m-1) + 0.20×max(0,s-1) + 0.50×completion"
-).format(cap=NOISE_DISCOUNT_CAP, cap_b=FIDELITY_CAP)
+).format(
+    scale=RISK_SCALE,
+    wa=BLAST_ASSET_WEIGHT,
+    wp=BLAST_IDENTITY_WEIGHT,
+    cap_b=FIDELITY_CAP,
+)
 
 
 def _clip(value: float, low: float, high: float) -> float:
@@ -91,10 +94,7 @@ def _identities_for(incident: CandidateIncident) -> list[Identity]:
 
 
 def diminishing_volume(event_count: int) -> float:
-    """Logarithmic volume factor from the fidelity formula.
-
-    1 event → 1.00. Repeated copies of the same rule add less each time.
-    """
+    """Logarithmic volume factor from the fidelity formula."""
     return 1.0 + FIDELITY_VOLUME_COEFF * math.log1p(max(0, event_count - 1))
 
 
@@ -116,32 +116,33 @@ def fidelity_a(
 
 def _collapse_unique_signals(
     alerts: Iterable[EnrichedAlert],
+    *,
+    fpr_override: float | None = None,
 ) -> dict[tuple[str, str], dict]:
     """Keep one bucket per meaningful (rule_name, mitre_tactic) pair."""
     buckets: dict[tuple[str, str], dict] = {}
     for alert in alerts:
         key = (alert.rule_name, alert.mitre_tactic)
         events = max(1, alert.event_count)
+        fpr = alert.false_positive_rate if fpr_override is None else fpr_override
         bucket = buckets.get(key)
         if bucket is None:
             buckets[key] = {
                 "event_count": events,
                 "conf_w": alert.confidence * events,
-                "fpr_w": alert.false_positive_rate * events,
+                "fpr_w": fpr * events,
                 "severity": alert.severity_raw,
             }
             continue
         bucket["event_count"] += events
         bucket["conf_w"] += alert.confidence * events
-        bucket["fpr_w"] += alert.false_positive_rate * events
+        bucket["fpr_w"] += fpr * events
         if SEVERITY_WEIGHTS[alert.severity_raw] > SEVERITY_WEIGHTS[bucket["severity"]]:
             bucket["severity"] = alert.severity_raw
     return buckets
 
 
-def score_threat_fidelity(incident: CandidateIncident) -> tuple[float, list[str]]:
-    """Base threat fidelity B over unique (rule, tactic) pairs."""
-    buckets = _collapse_unique_signals(incident.alerts)
+def _fidelity_from_buckets(buckets: dict[tuple[str, str], dict]) -> tuple[float, list[str]]:
     scores: list[float] = []
     evidence: list[str] = []
     for (rule, tactic), bucket in sorted(buckets.items()):
@@ -164,6 +165,17 @@ def score_threat_fidelity(incident: CandidateIncident) -> tuple[float, list[str]
     else:
         evidence.append(f"Σ fidelity={total:.3f} over {len(scores)} unique (rule, tactic)")
     return capped, evidence
+
+
+def score_threat_fidelity(
+    incident: CandidateIncident,
+    *,
+    fpr_override: float | None = None,
+) -> tuple[float, list[str]]:
+    """Base threat fidelity B over unique (rule, tactic) pairs."""
+    return _fidelity_from_buckets(
+        _collapse_unique_signals(incident.alerts, fpr_override=fpr_override)
+    )
 
 
 def score_progression(incident: CandidateIncident) -> tuple[float, list[str]]:
@@ -261,24 +273,20 @@ def score_privilege(incident: CandidateIncident) -> tuple[float, list[str]]:
     return best, evidence
 
 
-def score_noise(incident: CandidateIncident, progression_k: float) -> tuple[float, list[str]]:
-    """High when a bursty, high-FPR, single-stage incident is just noise."""
-    events = max(1, incident.total_event_count)
-    stages = max(1, len(incident.unique_techniques))
-    burst = _clip(math.log1p(events) / math.log1p(40), 0.0, 1.0)
-    mean_fpr = (
-        sum(a.false_positive_rate * a.event_count for a in incident.alerts) / events
-    )
-    k_progress = _clip((progression_k - PROGRESSION_BASE) / 2.5, 0.0, 1.0)
-    repetition = 1.0 - min(1.0, stages / max(1.0, math.log2(events) + 1.0))
-    value = burst * mean_fpr * (1.0 - 0.85 * k_progress) * (0.55 + 0.45 * repetition)
-    evidence = [
-        f"event_count={events} volume_factor={diminishing_volume(events):.2f}",
-        f"distinct techniques/stages={stages} (volume is not a stage count)",
-        f"mean FPR={mean_fpr:.3f}",
-        f"K-progress dampener={k_progress:.3f}",
-    ]
-    return _clip(value, 0.0, 1.0), evidence
+def blast_radius(asset_risk: float, identity_risk: float) -> float:
+    """Context multiplier C. Weights live in config.py."""
+    return BLAST_ASSET_WEIGHT * asset_risk + BLAST_IDENTITY_WEIGHT * identity_risk
+
+
+def raw_risk(fidelity_b: float, progression_k: float, blast_c: float) -> float:
+    return fidelity_b * progression_k * blast_c
+
+
+def normalize_risk(raw: float, scale: float = RISK_SCALE) -> float:
+    """Monotonic saturating map into [0, 100]. Does not expose RawRisk."""
+    if raw <= 0 or scale <= 0:
+        return 0.0
+    return 100.0 * (1.0 - math.exp(-raw / scale))
 
 
 def naive_siem_score(incident: CandidateIncident) -> float:
@@ -316,91 +324,100 @@ def _title(incident: CandidateIncident) -> str:
     return f"{what} on {where} involving {who}"
 
 
-def _attribution_pcts(factors: dict[str, float]) -> dict[str, float]:
-    """Partition 100% by how close each factor is to its configured ceiling."""
-    scaled = {
-        "threat_fidelity": factors["threat_fidelity"] / FIDELITY_CAP,
-        "attack_progression": min(factors["attack_progression"] / 4.0, 1.25),
-        "asset_impact": factors["asset_impact"] / ASSET_SCORE_MAX,
-        "identity_privilege": factors["identity_privilege"] / 1.8,
-    }
-    total = sum(scaled.values())
+def _join_evidence(lines: list[str]) -> str:
+    return "; ".join(lines)
+
+
+def integer_partition(weights: dict[str, float], order: tuple[str, ...]) -> dict[str, int]:
+    """Largest-remainder rounding so integer percents sum to exactly 100."""
+    positive = {name: max(0.0, weights.get(name, 0.0)) for name in order}
+    total = sum(positive.values())
     if total <= 0:
-        n = len(scaled)
-        return {name: round(100.0 / n, 4) for name in scaled}
-    return {name: round(100.0 * value / total, 4) for name, value in scaled.items()}
+        pcts = {name: 0 for name in order}
+        pcts[order[0]] = 100
+        return pcts
+    exact = {name: 100.0 * positive[name] / total for name in order}
+    floored = {name: int(math.floor(exact[name])) for name in order}
+    remainder = 100 - sum(floored.values())
+    leftovers = sorted(
+        order,
+        key=lambda name: (-(exact[name] - floored[name]), name),
+    )
+    for name in leftovers[:remainder]:
+        floored[name] += 1
+    return floored
+
+
+def ablation_attribution(
+    incident: CandidateIncident,
+    *,
+    fidelity_b: float,
+    progression_k: float,
+    blast_c: float,
+    evidence: dict[str, str],
+) -> list[RiskDriver]:
+    """Counterfactual ablation. Only positive score drops enter the 100% pie."""
+    real = normalize_risk(raw_risk(fidelity_b, progression_k, blast_c))
+    drop_b = real - normalize_risk(raw_risk(FIDELITY_BASELINE, progression_k, blast_c))
+    drop_k = real - normalize_risk(raw_risk(fidelity_b, PROGRESSION_BASELINE, blast_c))
+    drop_c = real - normalize_risk(raw_risk(fidelity_b, progression_k, BLAST_BASELINE))
+    clean_b, _ = score_threat_fidelity(incident, fpr_override=0.0)
+    without_fp = normalize_risk(raw_risk(clean_b, progression_k, blast_c))
+    fp_suppression = without_fp - real
+    weights = {
+        ATTRIBUTION_FACTORS[0]: drop_b,
+        ATTRIBUTION_FACTORS[1]: drop_k,
+        ATTRIBUTION_FACTORS[2]: drop_c,
+        ATTRIBUTION_FACTORS[3]: fp_suppression,
+    }
+    pcts = integer_partition(weights, ATTRIBUTION_FACTORS)
+    return [
+        RiskDriver(
+            factor=name,
+            contribution_pct=pcts[name],
+            evidence=evidence.get(name, ""),
+        )
+        for name in ATTRIBUTION_FACTORS
+    ]
 
 
 def score_incident(incident: CandidateIncident) -> ScoredIncident:
-    fidelity, fid_ev = score_threat_fidelity(incident)
-    progression, prog_ev = score_progression(incident)
-    asset, asset_ev = score_business_impact(incident)
-    privilege, priv_ev = score_privilege(incident)
-    impact = asset * privilege
-    raw = fidelity * progression * impact
-
-    pcts = _attribution_pcts(
-        {
-            "threat_fidelity": fidelity,
-            "attack_progression": progression,
-            "asset_impact": asset,
-            "identity_privilege": privilege,
-        }
-    )
-    drivers = [
-        RiskDriver(
-            name="threat_fidelity",
-            score=round(fidelity, 6),
-            weight=1.0,
-            contribution=round(raw * pcts["threat_fidelity"] / 100.0, 6),
-            contribution_pct=pcts["threat_fidelity"],
-            evidence=fid_ev,
-        ),
-        RiskDriver(
-            name="attack_progression",
-            score=round(progression, 6),
-            weight=1.0,
-            contribution=round(raw * pcts["attack_progression"] / 100.0, 6),
-            contribution_pct=pcts["attack_progression"],
-            evidence=prog_ev,
-        ),
-        RiskDriver(
-            name="asset_impact",
-            score=round(asset, 6),
-            weight=1.0,
-            contribution=round(raw * pcts["asset_impact"] / 100.0, 6),
-            contribution_pct=pcts["asset_impact"],
-            evidence=asset_ev + [f"I = asset_score × P_priv = {impact:.3f}"],
-        ),
-        RiskDriver(
-            name="identity_privilege",
-            score=round(privilege, 6),
-            weight=1.0,
-            contribution=round(raw * pcts["identity_privilege"] / 100.0, 6),
-            contribution_pct=pcts["identity_privilege"],
-            evidence=priv_ev,
-        ),
-    ]
-
-    noise, noise_evidence = score_noise(incident, progression)
-    discount = NOISE_DISCOUNT_CAP * noise
-    risk = min(100.0, raw * (1.0 - discount))
-    noise_driver = RiskDriver(
-        name="noise_discount",
-        score=round(noise, 6),
-        weight=NOISE_DISCOUNT_CAP,
-        contribution=round(-(raw * discount), 6),
-        contribution_pct=round(-100.0 * discount, 4),
-        evidence=noise_evidence
-        + [f"applied discount={discount:.3f} (cap={NOISE_DISCOUNT_CAP})"],
+    fidelity_b, fid_ev = score_threat_fidelity(incident)
+    progression_k, prog_ev = score_progression(incident)
+    asset_risk, asset_ev = score_business_impact(incident)
+    identity_risk, priv_ev = score_privilege(incident)
+    blast_c = blast_radius(asset_risk, identity_risk)
+    raw = raw_risk(fidelity_b, progression_k, blast_c)
+    risk = normalize_risk(raw)
+    clean_b, _ = score_threat_fidelity(incident, fpr_override=0.0)
+    drivers = ablation_attribution(
+        incident,
+        fidelity_b=fidelity_b,
+        progression_k=progression_k,
+        blast_c=blast_c,
+        evidence={
+            ATTRIBUTION_FACTORS[0]: _join_evidence(fid_ev),
+            ATTRIBUTION_FACTORS[1]: _join_evidence(prog_ev),
+            ATTRIBUTION_FACTORS[2]: (
+                f"C = {BLAST_ASSET_WEIGHT:.2f}×{asset_risk:.3f} + "
+                f"{BLAST_IDENTITY_WEIGHT:.2f}×{identity_risk:.3f} = {blast_c:.3f}; "
+                + _join_evidence(asset_ev + priv_ev)
+            ),
+            ATTRIBUTION_FACTORS[3]: (
+                f"B with FPR=0 is {clean_b:.3f} vs observed B={fidelity_b:.3f}"
+            ),
+        },
     )
     breakdown = RiskBreakdown(
         risk_score=round(risk, 4),
-        raw_weighted_score=round(raw, 4),
-        noise_score=round(noise, 6),
-        noise_discount=round(discount, 6),
-        drivers=drivers + [noise_driver],
+        fidelity_b=round(fidelity_b, 6),
+        progression_k=round(progression_k, 6),
+        blast_c=round(blast_c, 6),
+        asset_risk=round(asset_risk, 6),
+        identity_risk=round(identity_risk, 6),
+        drivers=drivers,
         formula=FORMULA,
+        raw_weighted_score=round(raw, 4),
     )
     return ScoredIncident(
         incident=incident,
@@ -425,9 +442,5 @@ def score_incidents(incidents: Iterable[CandidateIncident]) -> list[ScoredIncide
 
 
 def positive_attribution_sum(breakdown: RiskBreakdown) -> float:
-    """Sum of the constructive driver percentages (must be ~100)."""
-    return sum(
-        driver.contribution_pct
-        for driver in breakdown.drivers
-        if driver.name != "noise_discount"
-    )
+    """Integer ablation percentages must sum to 100."""
+    return float(sum(driver.contribution_pct for driver in breakdown.drivers))

@@ -215,14 +215,14 @@ def kill_chain_figure(tactics: list[str]) -> go.Figure:
 
 
 def driver_chart(card: IncidentCard) -> go.Figure:
-    drivers = [d for d in card.risk.drivers if d.name != "noise_discount"]
+    drivers = list(card.why_prioritized or card.risk.drivers)
     fig = go.Figure(
         go.Bar(
             x=[d.contribution_pct for d in drivers],
-            y=[d.name.replace("_", " ") for d in drivers],
+            y=[d.factor for d in drivers],
             orientation="h",
             marker_color="#3d6d99",
-            text=[f"{d.contribution_pct:.1f}%" for d in drivers],
+            text=[f"{d.contribution_pct}%" for d in drivers],
             textposition="outside",
         )
     )
@@ -233,7 +233,7 @@ def driver_chart(card: IncidentCard) -> go.Figure:
         plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#d7e0ea", size=12),
         xaxis=dict(
-            title="Contribution %",
+            title="Ablation contribution %",
             range=[0, max(42, max(d.contribution_pct for d in drivers) + 8)],
         ),
         yaxis=dict(autorange="reversed"),
@@ -399,14 +399,12 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
             st.plotly_chart(driver_chart(card), width="stretch")
         with right:
             st.markdown("**Why this priority**")
-            for driver in card.risk.drivers:
-                if driver.name == "noise_discount" and driver.score < 0.05:
-                    continue
-                st.write(
-                    f"**{driver.name.replace('_', ' ')}** · {driver.contribution_pct:.1f}%"
-                )
-                for line in driver.evidence[:2]:
-                    st.caption(line)
+            for driver in card.why_prioritized or card.risk.drivers:
+                st.write(f"**{driver.factor}** · {driver.contribution_pct}%")
+                if driver.evidence:
+                    st.caption(driver.evidence)
+        if card.why_not_false_positive:
+            st.caption(card.why_not_false_positive)
         st.caption(
             f"SIEM rank #{item.naive_siem_rank} uses raw severity×volume only. "
             "It is not used for this queue's default order."

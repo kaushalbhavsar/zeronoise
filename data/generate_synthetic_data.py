@@ -3,8 +3,8 @@
 
 Mandatory scenarios
 -------------------
-A  quiet_crown_jewel     4 Medium alerts, ~90 minutes, MUST be risk #1
-B  ransomware_staging    6 Medium/High alerts, MUST be about risk #2
+A  quiet_crown_jewel     4 Medium alerts, ~90 minutes
+B  ransomware_staging    6 Medium/High alerts
 C  noisy_false_priority  ~120 Critical WAF/IDS alerts, MUST be legacy #1
 
 Background noise is 160–180 isolated or tiny-burst alerts that must not
