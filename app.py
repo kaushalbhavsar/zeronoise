@@ -15,6 +15,14 @@ import streamlit as st
 
 from config import ALERTS_PATH, CMDB_PATH, IAM_PATH, KILL_CHAIN
 from engine.pipeline import run_pipeline
+from engine.presentation import (
+    context_badges,
+    correlation_evidence,
+    driver_label,
+    driver_rows,
+    rank_delta,
+    rank_delta_label,
+)
 from engine.schemas import IncidentCard, PipelineResult, ScoredIncident
 
 st.set_page_config(
@@ -65,6 +73,44 @@ st.markdown(
         border: 1px solid #2a3b50; border-radius: 3px; color: #c5d2e0; margin: 0 0.2rem 0.2rem 0;
     }
     .chip.on { border-color: #c45c5c; color: #ffd0d0; background: #2a1414; }
+    .badge {
+        display: inline-block; font-size: 0.70rem; padding: 0.10rem 0.42rem;
+        border-radius: 3px; margin: 0 0.22rem 0.22rem 0; border: 1px solid #2a3b50;
+        color: #d7e0ea;
+    }
+    .badge.hot { border-color: #8a3a3a; color: #ffb4b4; background: #2a1212; }
+    .badge.warn { border-color: #7a5a20; color: #ffd089; background: #2a2010; }
+    .badge.ok { border-color: #2a4a3a; color: #b6e0c8; background: #102018; }
+    .delta.up { color: #8ee0a8; }
+    .delta.down { color: #ff9a9a; }
+    .scorebox {
+        border: 1px solid #1c2736; border-radius: 6px; padding: 0.55rem 0.7rem;
+        background: #0c121b;
+    }
+    .scorebox .n { font-size: 1.55rem; font-weight: 700; color: #f2f6fb; }
+    .scorebox .l { font-size: 0.7rem; color: #8fa2b8; text-transform: uppercase; }
+    .funnel {
+        display: flex; align-items: stretch; gap: 0.35rem; margin: 0.2rem 0 0.75rem 0;
+    }
+    .funnel-step {
+        flex: 1; border: 1px solid #1c2736; border-radius: 6px; padding: 0.55rem 0.7rem;
+        background: #0c121b;
+    }
+    .funnel-step .n { font-size: 1.45rem; font-weight: 700; color: #f2f6fb; font-variant-numeric: tabular-nums; }
+    .funnel-step .l { font-size: 0.7rem; color: #8fa2b8; text-transform: uppercase; letter-spacing: 0.03em; }
+    .funnel-arrow { color: #4d6178; display: flex; align-items: center; font-size: 1.1rem; }
+    .icard {
+        border: 1px solid #1c2736; border-radius: 6px; padding: 0.55rem 0.65rem;
+        background: #0c121b; margin-bottom: 0.45rem;
+    }
+    .icard.active { border-color: #3d6d99; background: #101820; }
+    .icard .meta { color: #8fa2b8; font-size: 0.74rem; margin-top: 0.2rem; }
+    .icard .ranks { font-variant-numeric: tabular-nums; font-size: 0.78rem; color: #d7e0ea; margin-top: 0.28rem; }
+    .tl-line { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.84rem; padding: 0.12rem 0; }
+    .tl-late { color: #ffb4b4; }
+    .tl-time { color: #8fa2b8; }
+    .tl-id { color: #c5d2e0; }
+    .tl-tactic { color: #ffd089; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -214,12 +260,29 @@ def kill_chain_figure(tactics: list[str]) -> go.Figure:
     return fig
 
 
+def badge_class(name: str) -> str:
+    if name in {"Crown Jewel", "Tier-0 Admin", "Exfiltration", "Impact"}:
+        return "hot"
+    if name in {"High FP Rule", "Sandbox"}:
+        return "warn"
+    return "ok"
+
+
+def render_badges(item: ScoredIncident) -> None:
+    chips = "".join(
+        f"<span class='badge {badge_class(name)}'>{name}</span>"
+        for name in context_badges(item)
+    )
+    if chips:
+        st.markdown(chips, unsafe_allow_html=True)
+
+
 def driver_chart(card: IncidentCard) -> go.Figure:
-    drivers = list(card.why_prioritized or card.risk.drivers)
+    drivers = driver_rows(card)
     fig = go.Figure(
         go.Bar(
             x=[d.contribution_pct for d in drivers],
-            y=[d.factor for d in drivers],
+            y=[driver_label(d.factor) for d in drivers],
             orientation="h",
             marker_color="#3d6d99",
             text=[f"{d.contribution_pct}%" for d in drivers],
@@ -248,23 +311,73 @@ def queue_rows(
     rows = []
     for item in items:
         record = case(item.incident.incident_id)
+        delta = rank_delta(item.risk_rank, item.naive_siem_rank)
         rows.append(
             {
                 "Pri": priority(item.risk.risk_score),
                 "Incident": item.incident.incident_id,
                 "Risk": round(item.risk.risk_score, 1),
-                "SIEM#": item.naive_siem_rank or "—",
+                "AI#": item.risk_rank or "—",
+                "Legacy#": item.naive_siem_rank or "—",
+                "Δ": rank_delta_label(delta),
                 "Status": record["status"],
                 "Age": fmt_age(item.incident.first_seen, now),
-                "Last": fmt_ts(item.incident.last_seen),
                 "Identity": primary_user(item),
                 "Asset": primary_asset(item),
-                "Env": env_of(item),
                 "Class": classify(item),
-                "Owner": record["assignee"],
             }
         )
     return rows
+
+
+def _format_timeline_line(line: str) -> str:
+    """Keep cited chronology readable: 09:12  [ALT-…] Tactic — rule."""
+    head, sep, tail = line.partition(" — ")
+    if not sep:
+        return line
+    prefix, tactic = head.rsplit("]", 1) if "]" in head else (head, "")
+    if "]" in head:
+        prefix = prefix + "]"
+        tactic = tactic.strip()
+        return (
+            f"<span class='tl-time'>{prefix.split('[')[0].strip()}</span> "
+            f"<span class='tl-id'>[{prefix.split('[', 1)[1]}</span> "
+            f"<span class='tl-tactic'>{tactic}</span> — {tail}"
+        )
+    return line
+
+
+def render_featured_cards(items: list[ScoredIncident], selected_id: str) -> str | None:
+    """Top of queue: compact cards that reorder when AI vs Legacy is toggled."""
+    chosen: str | None = None
+    for item in items[:5]:
+        delta = rank_delta(item.risk_rank, item.naive_siem_rank)
+        chips = "".join(
+            f"<span class='badge {badge_class(name)}'>{name}</span>"
+            for name in context_badges(item)[:4]
+        )
+        active = "active" if item.incident.incident_id == selected_id else ""
+        st.markdown(
+            f"<div class='icard {active}'>"
+            f"<span class='pri {pri_class(item.risk.risk_score)}'>{priority(item.risk.risk_score)}</span> "
+            f"<strong>{item.incident.incident_id}</strong>"
+            f"<div class='meta'>{classify(item)} · risk {item.risk.risk_score:.0f}</div>"
+            f"<div class='ranks'>AI #{item.risk_rank or '—'} · Legacy #{item.naive_siem_rank or '—'} · "
+            f"<span class='delta {'up' if (delta or 0) > 0 else 'down' if (delta or 0) < 0 else ''}'>"
+            f"{rank_delta_label(delta)}</span></div>"
+            f"<div class='meta'>{item.incident.total_event_count} raw · "
+            f"{len(item.incident.alerts)} deduplicated</div>"
+            f"<div style='margin-top:0.28rem'>{chips}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "Open case",
+            key=f"feat-{st.session_state.get('queue_mode', 'ai')}-{item.incident.incident_id}",
+            use_container_width=True,
+        ):
+            chosen = item.incident.incident_id
+    return chosen
 
 
 def render_queue(items: list[ScoredIncident], now: datetime) -> str | None:
@@ -278,7 +391,7 @@ def render_queue(items: list[ScoredIncident], now: datetime) -> str | None:
         hide_index=True,
         on_select="rerun",
         selection_mode="single-row",
-        key="queue_table",
+        key=f"queue_table_{st.session_state.get('queue_mode', 'ai')}",
         height=min(560, 46 + 36 * len(frame)),
     )
     selected_rows = event.selection.rows if event and event.selection else []
@@ -292,21 +405,51 @@ def render_queue(items: list[ScoredIncident], now: datetime) -> str | None:
 def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) -> None:
     record = case(item.incident.incident_id)
     pri = priority(item.risk.risk_score)
+    ai_rank = item.risk_rank or card.priority_rank or card.risk_rank
+    legacy_rank = item.naive_siem_rank or card.naive_siem_rank
+    delta = rank_delta(ai_rank, legacy_rank)
+    delta_cls = "up" if (delta or 0) > 0 else "down" if (delta or 0) < 0 else ""
     head_l, head_r = st.columns([1.35, 0.65])
     with head_l:
         st.markdown(
             f"<span class='pri {pri_class(item.risk.risk_score)}'>{pri}</span> "
-            f"<strong>{item.incident.incident_id}</strong> · risk {item.risk.risk_score:.1f} · "
-            f"SIEM #{item.naive_siem_rank} · {record['status']}",
+            f"<strong>{item.incident.incident_id}</strong> · {record['status']}",
             unsafe_allow_html=True,
         )
         st.markdown(f"**{item.title}**")
+        render_badges(item)
         st.caption(
             f"{fmt_ts(item.incident.first_seen)} → {fmt_ts(item.incident.last_seen)}  ·  "
-            f"age {fmt_age(item.incident.first_seen, now)}  ·  "
-            f"{item.incident.total_event_count} raw events  ·  "
-            f"{len(item.incident.alerts)} correlated alerts  ·  "
-            f"{env_of(item)}"
+            f"age {fmt_age(item.incident.first_seen, now)}"
+        )
+        s1, s2, s3, s4 = st.columns(4)
+        with s1:
+            st.markdown(
+                f"<div class='scorebox'><div class='l'>Risk score</div>"
+                f"<div class='n'>{item.risk.risk_score:.0f}</div></div>",
+                unsafe_allow_html=True,
+            )
+        with s2:
+            st.markdown(
+                f"<div class='scorebox'><div class='l'>AI rank</div>"
+                f"<div class='n'>#{ai_rank or '—'}</div></div>",
+                unsafe_allow_html=True,
+            )
+        with s3:
+            st.markdown(
+                f"<div class='scorebox'><div class='l'>Legacy rank</div>"
+                f"<div class='n'>#{legacy_rank or '—'}</div></div>",
+                unsafe_allow_html=True,
+            )
+        with s4:
+            st.markdown(
+                f"<div class='scorebox'><div class='l'>Rank delta</div>"
+                f"<div class='n delta {delta_cls}'>{rank_delta_label(delta)}</div></div>",
+                unsafe_allow_html=True,
+            )
+        st.caption(
+            f"{item.incident.total_event_count} raw alerts  ·  "
+            f"{len(item.incident.alerts)} deduplicated alerts"
         )
     with head_r:
         a1, a2, a3, a4 = st.columns(4)
@@ -372,8 +515,14 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
 
     with timeline:
         st.markdown("**How the attack evolved**")
+        late = {"Exfiltration", "Impact", "Lateral Movement", "Credential Access"}
         for line in card.attack_timeline:
-            st.write(line)
+            late_cls = "tl-late" if any(tactic in line for tactic in late) else ""
+            st.markdown(
+                f"<div class='tl-line {late_cls}'>{_format_timeline_line(line)}</div>",
+                unsafe_allow_html=True,
+            )
+        st.plotly_chart(kill_chain_figure(card.tactics), width="stretch")
         rows = [
             {
                 "Alert": alert.alert_id,
@@ -404,8 +553,8 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
             st.plotly_chart(driver_chart(card), width="stretch")
         with right:
             st.markdown("**Why is it ranked here?**")
-            for driver in card.why_prioritized or card.risk.drivers:
-                st.write(f"**{driver.factor}** · {driver.contribution_pct}%")
+            for driver in driver_rows(card):
+                st.write(f"**{driver_label(driver.factor)}** · {driver.contribution_pct}%")
                 if driver.evidence:
                     st.caption(driver.evidence)
         if card.why_not_false_positive:
@@ -443,6 +592,12 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
                 originals.extend(alert.original_alert_ids or alert.member_alert_ids or [alert.alert_id])
             st.caption(f"{len(originals)} raw alert IDs after burst collapse")
             st.code("\n".join(originals[:40]) + ("\n…" if len(originals) > 40 else ""))
+        reasons = correlation_evidence(item)
+        if reasons:
+            st.markdown("**Why were these alerts grouped?**")
+            for row in reasons:
+                st.write(f"`{row['from']}` → `{row['to']}`")
+                st.caption(row["reason"])
         if card.edges:
             st.markdown("**Correlation graph**")
             st.dataframe(
@@ -471,7 +626,12 @@ def main() -> None:
     with st.sidebar:
         st.markdown("**Shift console**")
         st.caption(now.strftime("%Y-%m-%d %H:%M UTC"))
-        order = st.radio("Queue order", ("Risk", "SIEM volume"), horizontal=True)
+        order = st.radio(
+            "Queue order",
+            ("AI Risk-Based Triage", "Legacy SIEM Triage"),
+            horizontal=False,
+        )
+        st.session_state.queue_mode = "ai" if order.startswith("AI") else "legacy"
         q = st.text_input("Search", placeholder="INC, user, host, class")
         pri_filter = st.multiselect("Priority", ["P1", "P2", "P3", "P4"], default=["P1", "P2", "P3", "P4"])
         status_filter = st.multiselect("Status", list(STATUSES), default=list(OPEN_STATUSES))
@@ -484,7 +644,7 @@ def main() -> None:
 
     ordered = (
         result.risk_ranked
-        if order == "Risk"
+        if order.startswith("AI")
         else result.legacy_ranked
     )
     visible: list[ScoredIncident] = []
@@ -521,7 +681,6 @@ def main() -> None:
         if case(item.incident.incident_id)["status"] in OPEN_STATUSES
     ]
     p1 = sum(1 for item in open_items if priority(item.risk.risk_score) == "P1")
-    p2 = sum(1 for item in open_items if priority(item.risk.risk_score) == "P2")
     unacked = sum(
         1
         for item in open_items
@@ -531,21 +690,39 @@ def main() -> None:
     st.markdown(
         f"<div class='topbar'><div class='brand'>SOC"
         f"<span>Incident queue · {now.strftime('%d %b %H:%M UTC')}</span></div>"
-        f"<div class='brand'><span>{len(visible)} shown · "
-        f"order {order.lower()}</span></div></div>",
+        f"<div class='brand'><span>{len(visible)} shown · {order}</span></div></div>",
         unsafe_allow_html=True,
     )
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Open", f"{len(open_items)}")
-    k2.metric("P1", f"{p1}")
-    k3.metric("P2", f"{p2}")
-    k4.metric("Unacked", f"{unacked}")
-    k5.metric("Alerts 24h", f"{result.metrics.raw_alert_count}")
-    k6.metric("Correlated", f"{result.metrics.incident_count}")
+    raw_n = result.metrics.raw_alert_count
+    dedup_n = result.metrics.deduplicated_alert_count
+    inc_n = result.metrics.incident_count
+    high_n = result.metrics.high_priority_count
+    st.markdown(
+        f"<div class='funnel'>"
+        f"<div class='funnel-step'><div class='n'>{raw_n}</div><div class='l'>Raw alerts</div></div>"
+        f"<div class='funnel-arrow'>→</div>"
+        f"<div class='funnel-step'><div class='n'>{dedup_n}</div><div class='l'>Deduplicated events</div></div>"
+        f"<div class='funnel-arrow'>→</div>"
+        f"<div class='funnel-step'><div class='n'>{inc_n}</div><div class='l'>Correlated incidents</div></div>"
+        f"<div class='funnel-arrow'>→</div>"
+        f"<div class='funnel-step'><div class='n'>{high_n}</div><div class='l'>High-priority incidents</div></div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    f1, f2, f3 = st.columns(3)
+    f1.metric("Alert fatigue reduction", f"{result.metrics.fatigue_reduction_pct:.0f}%")
+    f1.caption(f"{raw_n} raw alerts → {inc_n} analyst-reviewable incidents")
+    f2.metric("Dedup compression", f"{result.metrics.volume_compression_pct:.0f}%")
+    f2.caption(f"{raw_n} raw → {dedup_n} after burst collapse")
+    f3.metric("Open / P1 / unacked", f"{len(open_items)} / {p1} / {unacked}")
 
     queue_col, case_col = st.columns([0.92, 1.28], gap="large")
     with queue_col:
-        st.caption("Select a row to open the case.")
+        st.caption(f"Top of {order}. Cards reorder when the queue mode changes.")
+        featured = render_featured_cards(visible, st.session_state.selected)
+        if featured:
+            st.session_state.selected = featured
+        st.caption("Full queue — select a row to open the case.")
         chosen = render_queue(visible, now)
         if chosen:
             st.session_state.selected = chosen

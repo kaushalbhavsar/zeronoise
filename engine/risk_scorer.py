@@ -436,7 +436,8 @@ def score_incidents(incidents: Iterable[CandidateIncident]) -> list[ScoredIncide
     ranks = {
         item.incident.incident_id: idx for idx, item in enumerate(legacy_order, start=1)
     }
-    for item in scored:
+    for idx, item in enumerate(scored, start=1):
+        item.risk_rank = idx
         item.naive_siem_rank = ranks[item.incident.incident_id]
     return scored
 

@@ -23,6 +23,8 @@ def test_timeline_cites_real_alert_ids() -> None:
         assert any(f"[{alert_id}]" in line for line in lines)
     for line in lines:
         assert " — " in line
+        assert line[0].isdigit()
+        assert "[" in line and "]" in line
 
 
 def test_timeline_never_invents_entities() -> None:

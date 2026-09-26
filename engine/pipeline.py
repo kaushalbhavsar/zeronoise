@@ -1,4 +1,8 @@
-"""End-to-end deterministic triage pipeline."""
+"""End-to-end deterministic triage pipeline.
+
+load → validate → normalize → enrich → deduplicate
+→ correlate → cluster → score → rank → explain
+"""
 
 from __future__ import annotations
 
@@ -28,6 +32,10 @@ def load_jsonl(path: Path) -> tuple[list[dict], list[str]]:
     return parse_jsonl(path)
 
 
+def _as_path(value: str | Path | None, default: Path) -> Path:
+    return Path(value) if value is not None else default
+
+
 def _scenario_ids(alerts: list[EnrichedAlert]) -> set[str]:
     return {alert.scenario_id for alert in alerts if alert.scenario_id}
 
@@ -50,12 +58,15 @@ def compute_metrics(
 ) -> PipelineMetrics:
     incident_count = len(risk_ranked)
     collapsed = max(0, enriched_count - len(deduped))
+    # Analyst-queue compression: 300 raw alerts → N reviewable incidents.
     fatigue = 0.0
     if raw_count:
         fatigue = 100.0 * (1.0 - incident_count / raw_count)
+    # Spec §39 example: 1 − deduplicated_event_count / raw_alert_count.
     compression = 0.0
     if raw_count:
         compression = 100.0 * (1.0 - len(deduped) / raw_count)
+    high_priority = sum(1 for item in risk_ranked if item.risk.risk_score >= 70.0)
 
     def rank_of(scored_list: list[ScoredIncident], scenario: str) -> int | None:
         for idx, item in enumerate(scored_list, start=1):
@@ -94,35 +105,47 @@ def compute_metrics(
         noisy_false_priority_legacy_rank=scan_legacy,
         missing_context_alert_count=missing_context,
         ranking_inverted=inverted,
+        high_priority_count=high_priority,
     )
 
 
 def run_pipeline(
+    alerts_path: str | Path | None = None,
+    cmdb_path: str | Path | None = None,
+    iam_path: str | Path | None = None,
+    *,
     alerts: list[dict] | None = None,
     assets: list[dict] | list[Asset] | None = None,
     identities: list[dict] | list[Identity] | None = None,
-    *,
-    alerts_path: Path = ALERTS_PATH,
-    cmdb_path: Path = CMDB_PATH,
-    iam_path: Path = IAM_PATH,
     use_llm: bool = False,
 ) -> PipelineResult:
+    """Load → validate → normalize → enrich → dedup → correlate → cluster → score → rank → explain."""
+    alerts_file = _as_path(alerts_path, ALERTS_PATH)
+    cmdb_file = _as_path(cmdb_path, CMDB_PATH)
+    iam_file = _as_path(iam_path, IAM_PATH)
+
     parse_errors: list[str] = []
     if alerts is not None:
         raw_alerts = list(alerts)
     else:
-        raw_alerts, parse_errors = load_jsonl(alerts_path)
-    raw_assets = assets if assets is not None else load_json(cmdb_path)
-    raw_identities = identities if identities is not None else load_json(iam_path)
+        raw_alerts, parse_errors = load_jsonl(alerts_file)
+    raw_assets = assets if assets is not None else load_json(cmdb_file)
+    raw_identities = identities if identities is not None else load_json(iam_file)
 
+    # validate + normalize + enrich
     enriched, normalize_errors = normalize_and_enrich_report(
         raw_alerts, raw_assets, raw_identities
     )
     all_errors = parse_errors + normalize_errors
-    deduped = deduplicate_alerts(enriched)
-    incidents = correlate_alerts(deduped)
-    scored = score_incidents(incidents)
 
+    # deduplicate
+    deduped = deduplicate_alerts(enriched)
+
+    # correlate + cluster (connected components / mega-split live in the correlator)
+    incidents = correlate_alerts(deduped)
+
+    # score + rank
+    scored = score_incidents(incidents)
     risk_ranked = sorted(
         scored, key=lambda item: (-item.risk.risk_score, item.incident.incident_id)
     )
@@ -136,6 +159,7 @@ def run_pipeline(
         item.incident.incident_id: idx for idx, item in enumerate(legacy_ranked, start=1)
     }
 
+    # explain
     scanner = _find_by_scenario(scored, "noisy_false_priority")
     breach = _find_by_scenario(scored, "quiet_crown_jewel")
     cards = explain_incidents(
@@ -182,6 +206,7 @@ if __name__ == "__main__":
     print(f"  raw alerts          : {m.raw_alert_count}")
     print(f"  after dedup         : {m.deduplicated_alert_count}")
     print(f"  incidents           : {m.incident_count}")
+    print(f"  high priority       : {m.high_priority_count}")
     print(f"  fatigue reduction   : {m.fatigue_reduction_pct:.1f}%")
     print(f"  ranking inverted    : {m.ranking_inverted}")
     print("  risk queue (top 5)")
