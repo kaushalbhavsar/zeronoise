@@ -191,10 +191,19 @@ input:focus-visible, textarea:focus-visible {
   .block-container { padding: 1rem 0.85rem 1.6rem 0.85rem; }
   .zn-title, h1 { font-size: 1.55rem !important; }
   .icard { min-height: 0; }
+  .case-header { position: static; }
+  .case-title { font-size: 1.2rem; }
   [data-testid="stHorizontalBlock"] { flex-wrap: wrap; }
   [data-testid="stHorizontalBlock"] > div[data-testid="stColumn"] {
     min-width: min(100%, 20rem) !important;
     flex: 1 1 20rem !important;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
   }
 }
 </style>

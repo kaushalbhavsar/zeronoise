@@ -16,11 +16,20 @@ from console.state import (
     SEVERITY_TOKEN,
     STATUSES,
     case,
+    presenting,
     reset_case_state,
     snapshot_now,
     snapshot_window,
 )
-from engine.presentation import badge_tone, context_badges
+from engine.presentation import (
+    METRIC_DEFINITIONS,
+    badge_tone,
+    context_badges,
+    incident_roles,
+    mask_identifier,
+    mask_text,
+    role_tokens,
+)
 from engine.schemas import PipelineResult, ScoredIncident
 
 
@@ -101,13 +110,18 @@ def env_of(item: ScoredIncident) -> str:
 
 
 def primary_asset(item: ScoredIncident) -> str:
-    hosts = item.incident.unique_hosts
-    return hosts[0] if hosts else "—"
+    return incident_roles(item)["affected_asset"]
 
 
 def primary_user(item: ScoredIncident) -> str:
-    users = item.incident.unique_users
-    return users[0] if users else "—"
+    return incident_roles(item)["title_identity"]
+
+
+def display(text: str, item: ScoredIncident | None = None) -> str:
+    if not presenting():
+        return text
+    tokens = role_tokens(item) if item is not None else []
+    return mask_text(text, tokens, True) if tokens else mask_identifier(text)
 
 
 def owner_of(item: ScoredIncident) -> str:
@@ -121,14 +135,25 @@ def status_of(item: ScoredIncident) -> str:
 def page_header(title: str, result: PipelineResult, *, lede: str) -> None:
     now = snapshot_now(result)
     first, last = snapshot_window(result)
-    st.markdown(f"<div class='zn-kicker'>ZeroNoise · demo snapshot</div>", unsafe_allow_html=True)
+    loaded = st.session_state.get("snapshot_loaded_at")
+    loaded_label = fmt_day(loaded) if loaded else fmt_day(now)
+    kicker = "ZeroNoise · presentation" if presenting() else "ZeroNoise · demo snapshot"
+    st.markdown(f"<div class='zn-kicker'>{kicker}</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='zn-title'>{title}</div>", unsafe_allow_html=True)
     st.markdown(
         f"<div class='zn-sub'>{lede} Reporting period {fmt_day(first)} → {fmt_day(last)}. "
-        f"Scope: offline JSONL + CMDB/IAM. Data freshness {fmt_day(now)} "
-        f"(12 minutes after last observed event). Historical / demo snapshot — not a live SIEM feed.</div>",
+        f"Scope: offline JSONL + CMDB/IAM. Last observed event {fmt_day(last)}. "
+        f"Snapshot refreshed {loaded_label}. "
+        f"Freshness clock {fmt_day(now)} (12 minutes after last observed event). "
+        f"Historical / demo snapshot — not a live SIEM feed.</div>",
         unsafe_allow_html=True,
     )
+    if presenting():
+        st.info(
+            "Presentation mode is on. Identifiers are masked for screen sharing. "
+            "This is display-only and is not access control."
+        )
+    st.caption("Filters and case navigation use the cached snapshot; they do not rescore incidents.")
 
 
 def render_badges(item: ScoredIncident, *, limit: int | None = 3) -> None:
@@ -303,12 +328,50 @@ def workspace_links() -> None:
     c.page_link(PAGE_INTEL, label="Detection intelligence")
 
 
+def session_chrome() -> None:
+    st.toggle(
+        "Presentation mode",
+        key="presentation_mode",
+        help="Masks identifiers and collapses technical controls for screen sharing. Not access control.",
+    )
+    loaded = st.session_state.get("snapshot_loaded_at")
+    if loaded:
+        st.caption(f"Snapshot refreshed {fmt_day(loaded)}")
+    if not presenting():
+        demo_admin_controls()
+
+
 def demo_admin_controls() -> None:
     with st.expander("Demo / admin", expanded=False):
         st.caption("These controls reset local session state. They do not change scores or source data.")
         if st.button("Reset case state", key="reset-case-state"):
             reset_case_state()
             st.rerun()
+
+
+def defined_metric(key: str, label: str, value) -> None:
+    st.metric(label, value, help=METRIC_DEFINITIONS[key])
+
+
+def empty_state(kind: str, *, action: str | None = None) -> None:
+    messages = {
+        "no_incidents": "This snapshot contains no correlated incidents.",
+        "no_matches": "No incidents match the current filters. The organization-wide snapshot is unchanged.",
+        "missing_case": "That incident is not in the current snapshot, so the deep link cannot be opened.",
+        "load_error": "The incident snapshot failed to load. Source files may be missing or unreadable.",
+        "no_p0": "There are no open P0 or P1 incidents in this snapshot.",
+        "no_assets": "No CMDB assets are attached to open P0/P1 cases.",
+        "no_edges": "Single-alert incident — no inter-alert edges were recorded.",
+    }
+    st.info(messages.get(kind, "Nothing to show."))
+    if action:
+        st.caption(action)
+
+
+def render_load_error(message: str) -> None:
+    empty_state("load_error", action="Regenerate the demo dataset or check data/sample_alerts.jsonl.")
+    with st.expander("Error details"):
+        st.code(message)
 
 
 def queue_metrics(result: PipelineResult) -> dict[str, int]:

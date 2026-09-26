@@ -1,3 +1,4 @@
+from engine.presentation import METRIC_DEFINITIONS
 from console.common import apply_preset, filter_summary, priority
 from console.state import OPEN_STATUSES, PRIORITIES
 
@@ -29,3 +30,12 @@ def test_filter_summary_is_compact() -> None:
     assert "Showing 12 of 111" in text
     assert "Production" in text
     assert "all priorities" in text
+
+
+def test_metric_definitions_state_scope_and_window() -> None:
+    for key in ("open", "matching", "p0_p1", "raw"):
+        text = METRIC_DEFINITIONS[key]
+        assert "Window" in text or "window" in text
+        assert "Calculation" in text or "Calculation" in text
+    assert "not the current queue filter" in METRIC_DEFINITIONS["open"]
+    assert "Current queue filters only" in METRIC_DEFINITIONS["matching"]

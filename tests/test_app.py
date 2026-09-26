@@ -104,6 +104,8 @@ def test_notes_and_checklist_persist_across_rerun() -> None:
     at.run()
     notes = at.text_area(key=f"notes-{case_id}")
     notes.set_value("handoff: isolate after backup confirm").run()
+    saver = next(button for button in at.button if button.label == "Save notes")
+    saver.click().run()
     assert at.session_state.cases[case_id]["notes"] == "handoff: isolate after backup confirm"
     boxes = [box for box in at.checkbox if box.key and str(box.key).startswith(f"act-{case_id}-")]
     assert boxes
@@ -129,6 +131,29 @@ def test_false_positive_close_requires_reason() -> None:
     closer = next(button for button in at.button if button.label == "Close as false positive")
     closer.click().run()
     assert at.session_state.cases[case_id]["status"] == "Closed — false positive"
+
+
+def test_deep_link_opens_named_case() -> None:
+    case_id = run_pipeline().risk_ranked[0].incident.incident_id
+    at = _app()
+    at.query_params["case"] = case_id
+    at.switch_page("console/pages/queue.py").run()
+    assert not at.exception
+    assert at.session_state.active_case_id == case_id
+    assert any("Back to queue" in button.label for button in at.button)
+
+
+def test_investigate_records_session_history() -> None:
+    at = _queue()
+    case_id = run_pipeline().risk_ranked[0].incident.incident_id
+    at.session_state.active_case_id = case_id
+    at.run()
+    next(button for button in at.button if button.label == "Investigate").click().run()
+    history = at.session_state.cases[case_id]["history"]
+    assert history
+    assert history[0]["actor"] == "You"
+    assert history[0]["field"] in {"status", "owner"}
+    assert at.session_state.cases[case_id]["status"] == "Investigating"
 
 
 def test_intelligence_uses_volume_not_fatigue_copy() -> None:
