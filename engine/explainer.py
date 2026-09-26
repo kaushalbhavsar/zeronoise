@@ -155,10 +155,10 @@ def contrastive_explanation(
     a, b = scored, other
     a_events = a.incident.total_event_count
     b_events = b.incident.total_event_count
-    a_impact = a.risk.blast_c
-    b_impact = b.risk.blast_c
-    a_prog = a.risk.progression_k
-    b_prog = b.risk.progression_k
+    a_impact = next(d.score for d in a.risk.drivers if d.name == "asset_impact")
+    b_impact = next(d.score for d in b.risk.drivers if d.name == "asset_impact")
+    a_prog = next(d.score for d in a.risk.drivers if d.name == "attack_progression")
+    b_prog = next(d.score for d in b.risk.drivers if d.name == "attack_progression")
     volume_note = (
         f"{a.incident.incident_id} has {a_events} raw events versus "
         f"{b.incident.incident_id} with {b_events}."
