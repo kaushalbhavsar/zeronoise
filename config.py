@@ -158,12 +158,16 @@ ENV_SCORE = ENVIRONMENT_WEIGHT
 SENSITIVITY_SCORE = DATA_WEIGHT
 PRIVILEGE_SCORE = PRIVILEGE_WEIGHT
 
-# Optional explanation-only LLM. Disabled by default; the engine is
-# fully offline. When enabled the model may rewrite prose but cannot
-# change scores, ranking, entities, alert IDs, or attribution.
+# Optional explanation-only LLM. The engine is fully offline unless a
+# provider and API key are present in the environment.
+#   LLM_PROVIDER=openai  OPENAI_API_KEY=...
+#   LLM_PROVIDER=gemini  GEMINI_API_KEY=...
 LLM_ENABLED = False
+LLM_PROVIDER = ""
 LLM_MODEL = "gpt-4o-mini"
+LLM_GEMINI_MODEL = "gemini-2.0-flash"
 LLM_BASE_URL = ""  # empty = official OpenAI-compatible default
+LLM_TIMEOUT_SECONDS = 20
 
 KILL_CHAIN: tuple[str, ...] = (
     "Initial Access",

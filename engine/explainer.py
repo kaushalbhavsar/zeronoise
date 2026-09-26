@@ -1,19 +1,31 @@
 """Explainable incident cards.
 
-The deterministic explainer is the source of truth. An optional LLM may
-rewrite prose only. It is forbidden from changing scores, ranking,
-entities, alert IDs, tactics, or attribution percentages.
+Deterministic Python templates are the source of truth and the offline
+fallback. An optional OpenAI or Gemini call may rewrite prose only. It
+cannot invent entities, change scores, or override attribution.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
+import urllib.parse
 import urllib.request
-from typing import Iterable
+from datetime import datetime, timezone
+from typing import Any, Iterable
 
-from config import LLM_BASE_URL, LLM_ENABLED, LLM_MODEL, SENSITIVITY_SCORE
+from config import (
+    KILL_CHAIN,
+    LLM_BASE_URL,
+    LLM_ENABLED,
+    LLM_GEMINI_MODEL,
+    LLM_MODEL,
+    LLM_PROVIDER,
+    LLM_TIMEOUT_SECONDS,
+    SENSITIVITY_SCORE,
+)
 from engine.schemas import (
     Asset,
     Identity,
@@ -21,6 +33,33 @@ from engine.schemas import (
     RiskDriver,
     ScoredIncident,
 )
+
+PRIVILEGED_TIERS = frozenset({"tier_0_domain_admin", "tier_1_cloud_admin"})
+HIGH_VALUE = "crown_jewel_pii_pci"
+BRACKET_ID = re.compile(r"\[([A-Za-z0-9._:-]+)\]")
+IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+LLM_SYSTEM_PROMPT = """You are assisting a SOC analyst.
+
+You may only use facts present in the supplied incident JSON.
+
+Never invent alerts, users, hosts, IP addresses, tactics, techniques, timestamps, or business impact.
+
+Every attack timeline step must cite at least one supplied alert_id using the form [alert_id].
+
+Risk-driver percentages must exactly match the deterministic values supplied by the scoring engine. Do not emit why_prioritized.
+
+Do not modify risk_score, priority_rank, or naive_siem_rank.
+
+Describe uncertainty explicitly. Prefer “unlikely to be isolated noise” over “definitely malicious”.
+
+Return JSON with exactly these keys:
+  executive_summary (string)
+  contrastive_explanation (string)
+  why_not_false_positive (string)
+  attack_timeline (array of strings)
+  recommended_actions (array of strings)
+"""
 
 
 def _assets(scored: ScoredIncident) -> list[Asset]:
@@ -46,64 +85,105 @@ def _top_drivers(scored: ScoredIncident, n: int = 3) -> list[RiskDriver]:
     )[:n]
 
 
+def _utc_clock(ts: datetime) -> str:
+    return ts.astimezone(timezone.utc).strftime("%H:%M UTC")
+
+
+def _alert_facts(scored: ScoredIncident) -> list[dict]:
+    facts: list[dict] = []
+    for alert in scored.incident.alerts:
+        facts.append(
+            {
+                "alert_id": alert.alert_id,
+                "original_alert_ids": list(alert.original_alert_ids or [alert.alert_id]),
+                "timestamp": (alert.first_seen or alert.timestamp).isoformat(),
+                "source_product": alert.source_product,
+                "rule_name": alert.rule_name,
+                "severity_raw": alert.severity_raw,
+                "mitre_tactic": alert.mitre_tactic,
+                "mitre_technique": alert.mitre_technique,
+                "user_id": alert.entities.user_id,
+                "host_id": alert.entities.host_id,
+                "src_ip": alert.entities.src_ip,
+                "dest_ip": alert.entities.dest_ip,
+                "event_count": alert.event_count,
+            }
+        )
+    return facts
+
+
+def _known_tokens(card: IncidentCard) -> dict[str, set[str]]:
+    alert_ids = set(card.alert_ids)
+    for fact in card.alert_facts:
+        alert_ids.add(str(fact.get("alert_id") or ""))
+        alert_ids.update(str(item) for item in fact.get("original_alert_ids") or [])
+    ips = set()
+    for fact in card.alert_facts:
+        for key in ("src_ip", "dest_ip"):
+            if fact.get(key):
+                ips.add(str(fact[key]))
+    hosts = set(card.hosts)
+    hostnames = {asset.hostname for asset in card.assets}
+    users = set(card.users)
+    techniques = set(card.techniques)
+    tactics = set(card.tactics)
+    return {
+        "alert_ids": {item for item in alert_ids if item},
+        "ips": ips,
+        "hosts": hosts | hostnames,
+        "users": users,
+        "techniques": techniques,
+        "tactics": tactics,
+    }
+
+
+def _kill_chain_ordered(tactics: list[str]) -> bool:
+    indices = [KILL_CHAIN.index(name) for name in tactics if name in KILL_CHAIN]
+    return indices == sorted(indices) and len(indices) >= 2
+
+
 def deterministic_summary(scored: ScoredIncident) -> str:
     inc = scored.incident
     assets = _assets(scored)
     identities = _identities(scored)
-    top = _top_drivers(scored, 2)
-    driver_txt = " and ".join(
-        f"{d.factor} ({d.contribution_pct}%)" for d in top
+    who = identities[0].user_id if identities else (
+        inc.unique_users[0] if inc.unique_users else "an unresolved identity"
     )
-    asset_txt = "unattributed systems"
     if assets:
         jewel = max(assets, key=lambda a: SENSITIVITY_SCORE[a.data_sensitivity])
-        asset_txt = (
-            f"{jewel.hostname} ({jewel.environment}, {jewel.data_sensitivity})"
-        )
-    who = identities[0].user_id if identities else "no resolved identity"
-    chain = " → ".join(inc.unique_tactics) if inc.unique_tactics else "a single tactic"
+        where = f"{jewel.hostname} ({jewel.environment}, {jewel.data_sensitivity})"
+    elif inc.unique_hosts:
+        where = inc.unique_hosts[0]
+    else:
+        where = "unattributed systems"
+    chain = " → ".join(inc.unique_tactics) if inc.unique_tactics else "an unmapped tactic"
+    sensors = ", ".join(inc.unique_products) or "unknown sensors"
+    start = _utc_clock(inc.first_seen)
     return (
-        f"Risk {scored.risk.risk_score:.1f}/100 from {inc.total_event_count} raw events "
-        f"collapsed into {len(inc.alerts)} correlated alert group(s). "
-        f"Primary drivers: {driver_txt}. "
-        f"Activity involves {who} against {asset_txt} and spans {chain}."
+        f"From {start}, {who} was observed against {where} across {len(inc.alerts)} "
+        f"correlated alert group(s) ({inc.total_event_count} raw events) from {sensors}. "
+        f"The mapped sequence is {chain}. "
+        f"Risk {scored.risk.risk_score:.1f}/100; legacy SIEM score {scored.legacy_score:.0f}."
     )
 
 
 def deterministic_narrative(scored: ScoredIncident) -> str:
     inc = scored.incident
-    lines: list[str] = []
-    lines.append(
+    parts = [
         f"Incident {inc.incident_id} opened at {inc.first_seen.isoformat()} "
         f"and last updated at {inc.last_seen.isoformat()}."
-    )
+    ]
     if inc.unique_tactics:
-        lines.append(
-            "Observed ATT&CK progression: " + " → ".join(inc.unique_tactics) + "."
-        )
-    products = ", ".join(inc.unique_products)
-    lines.append(
-        f"Evidence arrived from {products} across {len(inc.alerts)} "
-        f"deduplicated alerts ({inc.total_event_count} raw events)."
+        parts.append("Observed ATT&CK progression: " + " → ".join(inc.unique_tactics) + ".")
+    parts.append(
+        f"Evidence arrived from {', '.join(inc.unique_products) or 'unknown sensors'} "
+        f"across {len(inc.alerts)} deduplicated alerts ({inc.total_event_count} raw events)."
     )
     if inc.unique_users:
-        lines.append("Identities: " + ", ".join(inc.unique_users) + ".")
+        parts.append("Identities: " + ", ".join(inc.unique_users) + ".")
     if inc.unique_hosts:
-        lines.append("Hosts: " + ", ".join(inc.unique_hosts) + ".")
-    fp = next(
-        (d for d in scored.risk.drivers if d.factor == "FP/Noise Suppression"),
-        None,
-    )
-    if fp and fp.contribution_pct >= 15:
-        lines.append(
-            "FP/noise suppression removed a material share of the score "
-            f"({fp.contribution_pct}%) because historical false-positive rates are high."
-        )
-    lines.append(
-        "Vendor severity is treated as a residual signal only "
-        f"(max={inc.max_severity}); it does not dominate ranking."
-    )
-    return " ".join(lines)
+        parts.append("Hosts: " + ", ".join(inc.unique_hosts) + ".")
+    return " ".join(parts)
 
 
 def deterministic_containment(scored: ScoredIncident) -> list[str]:
@@ -126,8 +206,13 @@ def deterministic_containment(scored: ScoredIncident) -> list[str]:
         actions.append(f"Isolate {hosts} from production east-west paths.")
     if "Exfiltration" in tactics or "Collection" in tactics:
         actions.append(
-            "Block observed egress destinations and snapshot the crown-jewel datastore "
+            "Block observed egress destinations and snapshot the affected datastore "
             "for forensic preservation."
+        )
+    if "Impact" in tactics:
+        actions.append(
+            "Halt further destructive activity: disable the involved account, "
+            "block backup-deletion tools, and snapshot the host before cleanup."
         )
     if "Persistence" in tactics:
         actions.append(
@@ -153,15 +238,9 @@ def contrastive_explanation(
     if other is None or other.incident.incident_id == scored.incident.incident_id:
         return None
     a, b = scored, other
-    a_events = a.incident.total_event_count
-    b_events = b.incident.total_event_count
-    a_impact = a.risk.blast_c
-    b_impact = b.risk.blast_c
-    a_prog = a.risk.progression_k
-    b_prog = b.risk.progression_k
     volume_note = (
-        f"{a.incident.incident_id} has {a_events} raw events versus "
-        f"{b.incident.incident_id} with {b_events}."
+        f"{a.incident.incident_id} has {a.incident.total_event_count} raw events versus "
+        f"{b.incident.incident_id} with {b.incident.total_event_count}."
     )
     if a.risk.risk_score >= b.risk.risk_score:
         relation = (
@@ -174,30 +253,70 @@ def contrastive_explanation(
             f"({a.risk.risk_score:.1f} vs {b.risk.risk_score:.1f})"
         )
     return (
-        f"{relation} because blast-radius C is {a_impact:.2f} vs {b_impact:.2f} "
-        f"and kill-chain K is {a_prog:.2f} vs {b_prog:.2f}. {volume_note} "
-        "Raw volume and vendor Critical labels are not sufficient to win the queue."
+        f"Legacy SIEM ranks by raw severity × volume (naive score {a.legacy_score:.0f} "
+        f"vs {b.legacy_score:.0f}, SIEM #{a.naive_siem_rank} vs #{b.naive_siem_rank}). "
+        f"{relation} because blast-radius C is {a.risk.blast_c:.2f} vs {b.risk.blast_c:.2f} "
+        f"and kill-chain K is {a.risk.progression_k:.2f} vs {b.risk.progression_k:.2f}. "
+        f"{volume_note} Raw volume and vendor Critical labels are not sufficient to win the queue."
     )
 
 
 def why_not_false_positive(scored: ScoredIncident) -> str:
     inc = scored.incident
+    assets = _assets(scored)
+    identities = _identities(scored)
+    tactics = list(inc.unique_tactics)
+    sensors = list(inc.unique_products)
+    reasons: list[str] = []
+    if len(sensors) >= 2:
+        reasons.append(
+            f"{', '.join(sensors[:-1])}, and {sensors[-1]} independently observed the activity"
+            if len(sensors) > 2
+            else f"{sensors[0]} and {sensors[1]} independently observed the activity"
+        )
+    if len(tactics) >= 2:
+        reasons.append(
+            "a temporally coherent sequence spanning " + ", ".join(tactics)
+            if _kill_chain_ordered(tactics)
+            else "more than one MITRE tactic (" + ", ".join(tactics) + ")"
+        )
+    if "Credential Access" in tactics:
+        reasons.append("credential-access behavior")
+    if "Lateral Movement" in tactics:
+        reasons.append("lateral movement")
+    if any(asset.data_sensitivity == HIGH_VALUE for asset in assets):
+        jewel = next(asset.hostname for asset in assets if asset.data_sensitivity == HIGH_VALUE)
+        reasons.append(f"a high-value destination ({jewel})")
+    if any(ident.privilege_tier in PRIVILEGED_TIERS for ident in identities):
+        who = next(
+            ident.user_id for ident in identities if ident.privilege_tier in PRIVILEGED_TIERS
+        )
+        reasons.append(f"a privileged account ({who})")
+    if "Exfiltration" in tactics or "Impact" in tactics:
+        late = "exfiltration" if "Exfiltration" in tactics else "impact"
+        reasons.append(f"a late-stage {late} signal")
+
     mean_fpr = (
         sum(alert.false_positive_rate * alert.event_count for alert in inc.alerts)
         / max(1, inc.total_event_count)
     )
-    sensors = len(inc.unique_products)
-    stages = len(inc.unique_tactics)
-    if mean_fpr >= 0.6 and stages <= 2:
+    if len(reasons) >= 2:
+        lead, *rest = reasons
+        extra = "; ".join(rest)
         return (
-            f"Mean historical FPR is {mean_fpr:.2f} across {inc.total_event_count} raw events "
-            f"and only {stages} tactic(s) from {sensors} sensor(s). "
-            "This looks like a noisy signature unless new kill-chain stages appear."
+            f"This is unlikely to be isolated noise because {lead}"
+            + (f", plus {extra}" if extra else "")
+            + ". That assessment is uncertain and should be confirmed on the cited timeline."
+        )
+    if mean_fpr >= 0.6 and len(tactics) <= 2:
+        return (
+            f"This may still be isolated noise: mean historical FPR is {mean_fpr:.2f} "
+            f"across {inc.total_event_count} raw events, with only {len(tactics)} tactic(s) "
+            f"from {len(sensors)} sensor(s). New kill-chain stages would change that assessment."
         )
     return (
-        f"Mean FPR is {mean_fpr:.2f}, but {stages} ATT&CK tactic(s) and {sensors} sensor(s) "
-        f"plus blast-radius C={scored.risk.blast_c:.2f} are inconsistent with a single "
-        "false-positive flood. Confirm with the timeline before closing."
+        f"The available signals are limited ({len(tactics)} tactic(s), {len(sensors)} sensor(s), "
+        f"mean FPR {mean_fpr:.2f}). Treat as uncertain until more independent evidence appears."
     )
 
 
@@ -207,10 +326,18 @@ def attack_timeline(scored: ScoredIncident) -> list[str]:
         scored.incident.alerts,
         key=lambda item: (item.first_seen or item.timestamp, item.alert_id),
     ):
-        start = (alert.first_seen or alert.timestamp).isoformat()
+        who = alert.entities.user_id
+        host = alert.entities.host_id
+        target = ""
+        if who and host:
+            target = f" for {who} on {host}"
+        elif who:
+            target = f" for {who}"
+        elif host:
+            target = f" on {host}"
+        clock = _utc_clock(alert.first_seen or alert.timestamp)
         lines.append(
-            f"{start}  {alert.source_product}  {alert.severity_raw}  "
-            f"{alert.mitre_tactic}  {alert.rule_name}  n={alert.event_count}"
+            f"[{alert.alert_id}] {clock} — {alert.rule_name}{target}."
         )
     return lines
 
@@ -240,11 +367,13 @@ def build_card(
         raw_event_count=inc.total_event_count,
         max_severity=inc.max_severity,
         tactics=list(inc.unique_tactics),
+        techniques=list(inc.unique_techniques),
         products=list(inc.unique_products),
         users=list(inc.unique_users),
         hosts=list(inc.unique_hosts),
         assets=_assets(scored),
         identities=_identities(scored),
+        alert_facts=_alert_facts(scored),
         executive_summary=deterministic_summary(scored),
         narrative=deterministic_narrative(scored),
         containment=actions,
@@ -262,109 +391,307 @@ def build_card(
     )
 
 
-def _locked_facts(card: IncidentCard) -> dict:
+def llm_incident_payload(card: IncidentCard) -> dict[str, Any]:
+    """Structured facts only — never the rest of the alert stream."""
     return {
         "incident_id": card.incident_id,
-        "title": card.title,
+        "priority_rank": card.priority_rank or card.risk_rank,
+        "naive_siem_rank": card.naive_siem_rank or card.legacy_rank,
+        "ai_rank": card.priority_rank or card.risk_rank,
         "risk_score": card.risk_score,
-        "legacy_score": card.legacy_score,
-        "alert_ids": card.alert_ids,
-        "tactics": card.tactics,
-        "users": card.users,
-        "hosts": card.hosts,
-        "raw_event_count": card.raw_event_count,
-        "max_severity": card.max_severity,
-        "attribution": [
-            {
-                "factor": d.factor,
-                "contribution_pct": d.contribution_pct,
-            }
-            for d in card.risk.drivers
+        "risk_attribution": [
+            {"factor": driver.factor, "contribution_pct": driver.contribution_pct}
+            for driver in (card.why_prioritized or card.risk.drivers)
         ],
-        "containment_seeds": card.containment,
-        "deterministic_summary": card.executive_summary,
-        "deterministic_narrative": card.narrative,
+        "alert_ids": list(card.alert_ids),
+        "alerts": list(card.alert_facts),
+        "timestamps": {
+            "first_seen": card.first_seen.isoformat(),
+            "last_seen": card.last_seen.isoformat(),
+        },
+        "entities": {
+            "users": list(card.users),
+            "hosts": list(card.hosts),
+        },
+        "cmdb_context": [
+            {
+                "host_id": asset.host_id,
+                "hostname": asset.hostname,
+                "environment": asset.environment,
+                "data_sensitivity": asset.data_sensitivity,
+                "business_criticality": asset.business_criticality,
+            }
+            for asset in card.assets
+        ],
+        "iam_context": [
+            {
+                "user_id": ident.user_id,
+                "department": ident.department,
+                "privilege_tier": ident.privilege_tier,
+            }
+            for ident in card.identities
+        ],
+        "mitre_tactics": list(card.tactics),
+        "mitre_techniques": list(card.techniques),
+        "correlation_edges": [
+            {
+                "source_alert_id": edge.source_alert_id,
+                "target_alert_id": edge.target_alert_id,
+                "relationship_type": edge.relationship_type,
+                "time_delta_minutes": edge.time_delta_minutes,
+                "correlation_strength": edge.correlation_strength,
+            }
+            for edge in card.edges
+        ],
     }
 
 
-def _call_llm(prompt: str) -> dict | None:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        return None
-    base = LLM_BASE_URL or "https://api.openai.com/v1"
-    body = json.dumps(
-        {
-            "model": LLM_MODEL,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "You rewrite SOC incident explanations. You must use only "
-                        "the supplied facts. Never invent entities, alert IDs, "
-                        "tactics, scores, or percentages. Return JSON with keys "
-                        "executive_summary, narrative, containment (array of strings)."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-        }
-    ).encode("utf-8")
+def resolve_llm_provider() -> str:
+    return (os.environ.get("LLM_PROVIDER") or LLM_PROVIDER or "").strip().lower()
+
+
+def resolve_llm_api_key(provider: str | None = None) -> str:
+    name = provider or resolve_llm_provider()
+    if name == "gemini":
+        return (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
+    if name == "openai":
+        return (os.environ.get("OPENAI_API_KEY") or "").strip()
+    return (
+        os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("GEMINI_API_KEY")
+        or ""
+    ).strip()
+
+
+def llm_is_configured() -> bool:
+    if os.environ.get("LLM_ENABLED", "").strip().lower() in {"0", "false", "no"}:
+        return False
+    provider = resolve_llm_provider()
+    if provider in {"openai", "gemini"}:
+        return bool(resolve_llm_api_key(provider))
+    if LLM_ENABLED:
+        return bool(resolve_llm_api_key("openai") or resolve_llm_api_key("gemini"))
+    return False
+
+
+def _post_json(url: str, body: dict, headers: dict[str, str]) -> dict | None:
     request = urllib.request.Request(
-        f"{base.rstrip('/')}/chat/completions",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers=headers,
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        with urllib.request.urlopen(request, timeout=LLM_TIMEOUT_SECONDS) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def _call_openai(payload: dict[str, Any]) -> dict | None:
+    api_key = resolve_llm_api_key("openai")
+    if not api_key:
+        return None
+    base = (os.environ.get("LLM_BASE_URL") or LLM_BASE_URL or "https://api.openai.com/v1").rstrip("/")
+    model = os.environ.get("LLM_MODEL") or LLM_MODEL
+    result = _post_json(
+        f"{base}/chat/completions",
+        {
+            "model": model,
+            "temperature": 0,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": LLM_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": "Write the ExplainableIncidentCard prose from this incident JSON:\n"
+                    + json.dumps(payload, default=str),
+                },
+            ],
+        },
+        {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+    if not result:
         return None
     try:
-        content = payload["choices"][0]["message"]["content"]
-        return json.loads(content)
-    except (KeyError, IndexError, json.JSONDecodeError, TypeError):
+        return json.loads(result["choices"][0]["message"]["content"])
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
         return None
+
+
+def _call_gemini(payload: dict[str, Any]) -> dict | None:
+    api_key = resolve_llm_api_key("gemini")
+    if not api_key:
+        return None
+    model = os.environ.get("GEMINI_MODEL") or LLM_GEMINI_MODEL
+    query = urllib.parse.urlencode({"key": api_key})
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent?{query}"
+    )
+    result = _post_json(
+        url,
+        {
+            "system_instruction": {"parts": [{"text": LLM_SYSTEM_PROMPT}]},
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": "Write the ExplainableIncidentCard prose from this incident JSON:\n"
+                            + json.dumps(payload, default=str)
+                        }
+                    ],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0,
+                "responseMimeType": "application/json",
+            },
+        },
+        {"Content-Type": "application/json"},
+    )
+    if not result:
+        return None
+    try:
+        text = result["candidates"][0]["content"]["parts"][0]["text"]
+        return json.loads(text)
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _call_llm(payload: dict[str, Any]) -> dict | None:
+    provider = resolve_llm_provider()
+    if provider == "gemini":
+        return _call_gemini(payload)
+    if provider == "openai" or (not provider and resolve_llm_api_key("openai")):
+        return _call_openai(payload)
+    if resolve_llm_api_key("gemini"):
+        return _call_gemini(payload)
+    return None
+
+
+def timeline_cites_real_ids(lines: list[str], known_ids: set[str]) -> bool:
+    if not lines:
+        return False
+    for line in lines:
+        cited = BRACKET_ID.findall(line)
+        if not cited:
+            return False
+        if any(item not in known_ids for item in cited):
+            return False
+        if not any(item in known_ids for item in cited):
+            return False
+    return True
+
+
+def _text_uses_only_known_facts(text: str, known: dict[str, set[str]]) -> bool:
+    for cited in BRACKET_ID.findall(text):
+        if cited not in known["alert_ids"]:
+            return False
+    for ip in IPV4.findall(text):
+        if ip not in known["ips"]:
+            return False
+    return True
+
+
+def apply_llm_prose(card: IncidentCard, rewritten: dict[str, Any]) -> IncidentCard:
+    """Accept LLM prose only after evidence checks. Scores and ranks stay frozen."""
+    known = _known_tokens(card)
+    summary = rewritten.get("executive_summary")
+    contrastive = rewritten.get("contrastive_explanation")
+    fp_text = rewritten.get("why_not_false_positive")
+    timeline = rewritten.get("attack_timeline")
+    actions = rewritten.get("recommended_actions")
+
+    updates: dict[str, Any] = {
+        "risk_score": card.risk_score,
+        "priority_rank": card.priority_rank,
+        "naive_siem_rank": card.naive_siem_rank,
+        "why_prioritized": list(card.why_prioritized),
+        "risk": card.risk,
+        "alert_ids": list(card.alert_ids),
+        "tactics": list(card.tactics),
+        "techniques": list(card.techniques),
+        "users": list(card.users),
+        "hosts": list(card.hosts),
+    }
+
+    def take_text(value: object) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        text = value.strip()
+        return text if _text_uses_only_known_facts(text, known) else None
+
+    summary_ok = take_text(summary)
+    contrastive_ok = take_text(contrastive)
+    fp_ok = take_text(fp_text)
+    timeline_ok: list[str] | None = None
+    if isinstance(timeline, list):
+        cleaned = [str(line).strip() for line in timeline if str(line).strip()]
+        if cleaned and timeline_cites_real_ids(cleaned, known["alert_ids"]) and all(
+            _text_uses_only_known_facts(line, known) for line in cleaned
+        ):
+            timeline_ok = cleaned
+    actions_ok: list[str] | None = None
+    if isinstance(actions, list):
+        cleaned_actions = [str(item).strip() for item in actions if str(item).strip()]
+        if cleaned_actions and all(_text_uses_only_known_facts(item, known) for item in cleaned_actions):
+            actions_ok = cleaned_actions
+
+    def present(value: object) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, list):
+            return bool(value)
+        return True
+
+    provided = [
+        present(summary),
+        present(contrastive),
+        present(fp_text),
+        present(timeline),
+        present(actions),
+    ]
+    accepted = [
+        summary_ok is not None if present(summary) else True,
+        contrastive_ok is not None if present(contrastive) else True,
+        fp_ok is not None if present(fp_text) else True,
+        timeline_ok is not None if present(timeline) else True,
+        actions_ok is not None if present(actions) else True,
+    ]
+    if not any(provided) or not all(accepted):
+        return card
+    if summary_ok:
+        updates["executive_summary"] = summary_ok
+    if contrastive_ok:
+        updates["contrastive"] = contrastive_ok
+        updates["contrastive_explanation"] = contrastive_ok
+    if fp_ok:
+        updates["why_not_false_positive"] = fp_ok
+    if timeline_ok:
+        updates["attack_timeline"] = timeline_ok
+    if actions_ok:
+        updates["recommended_actions"] = actions_ok
+        updates["containment"] = actions_ok
+    updates["llm_enhanced"] = True
+    updates["explanation_source"] = "llm"
+    return card.model_copy(update=updates)
 
 
 def enhance_with_llm(card: IncidentCard) -> IncidentCard:
-    """Optional prose rewrite. Scores, IDs, tactics, and attribution stay frozen."""
-    if not LLM_ENABLED:
+    """Optional prose rewrite. Missing keys or a failed call keep the template card."""
+    if not llm_is_configured() and not resolve_llm_api_key():
         return card
-    facts = _locked_facts(card)
-    rewritten = _call_llm(
-        "Rewrite the analyst-facing prose using only these facts:\n"
-        + json.dumps(facts, default=str)
-    )
-    if not rewritten:
+    rewritten = _call_llm(llm_incident_payload(card))
+    if not rewritten or not isinstance(rewritten, dict):
         return card
-    summary = rewritten.get("executive_summary") or card.executive_summary
-    narrative = rewritten.get("narrative") or card.narrative
-    containment = rewritten.get("containment") or card.containment
-    if not isinstance(containment, list):
-        containment = card.containment
-    # Re-bind every immutable field from the original card.
-    return card.model_copy(
-        update={
-            "executive_summary": str(summary),
-            "narrative": str(narrative),
-            "containment": [str(item) for item in containment],
-            "llm_enhanced": True,
-            "explanation_source": "llm",
-            "risk_score": card.risk_score,
-            "legacy_score": card.legacy_score,
-            "risk": card.risk,
-            "alert_ids": card.alert_ids,
-            "tactics": card.tactics,
-            "users": card.users,
-            "hosts": card.hosts,
-        }
-    )
+    return apply_llm_prose(card, rewritten)
 
 
 def explain_incidents(
@@ -378,7 +705,7 @@ def explain_incidents(
 ) -> list[IncidentCard]:
     cards: list[IncidentCard] = []
     scored_list = list(scored)
-    apply_llm = LLM_ENABLED if use_llm is None else use_llm
+    apply_llm = llm_is_configured() if use_llm is None else use_llm
     for item in scored_list:
         other = contrast_target
         if other is None or other.incident.incident_id == item.incident.incident_id:
