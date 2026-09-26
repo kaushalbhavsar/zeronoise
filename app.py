@@ -830,21 +830,20 @@ def render_case_workspace(
             st.rerun()
         return
     render_case_header(item, card, now)
-    overview, timeline, attack, risk, response, evidence = st.tabs(
+    case_tabs = st.tabs(
         ["Overview", "Timeline", "ATT&CK", "Risk", "Response", "Evidence"]
     )
-    with overview:
-        render_overview_tab(item, card)
-    with timeline:
-        render_timeline_tab(item, card)
-    with attack:
-        render_attack_tab(item, card)
-    with risk:
-        render_risk_tab(item, card)
-    with response:
-        render_response_tab(item, card)
-    with evidence:
-        render_evidence_tab(item, card)
+    tab_renderers = (
+        render_overview_tab,
+        render_timeline_tab,
+        render_attack_tab,
+        render_risk_tab,
+        render_response_tab,
+        render_evidence_tab,
+    )
+    for tab, renderer in zip(case_tabs, tab_renderers):
+        with tab:
+            renderer(item, card)
 
 
 def visible_incidents(
