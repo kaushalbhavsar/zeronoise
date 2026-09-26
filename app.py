@@ -399,14 +399,12 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
             st.plotly_chart(driver_chart(card), width="stretch")
         with right:
             st.markdown("**Why this priority**")
-            for driver in card.risk.drivers:
-                if driver.name == "noise_discount" and driver.score < 0.05:
-                    continue
-                st.write(
-                    f"**{driver.name.replace('_', ' ')}** · {driver.contribution_pct:.1f}%"
-                )
-                for line in driver.evidence[:2]:
-                    st.caption(line)
+            for driver in card.why_prioritized or card.risk.drivers:
+                st.write(f"**{driver.factor}** · {driver.contribution_pct}%")
+                if driver.evidence:
+                    st.caption(driver.evidence)
+        if card.why_not_false_positive:
+            st.caption(card.why_not_false_positive)
         st.caption(
             f"SIEM rank #{item.naive_siem_rank} uses raw severity×volume only. "
             "It is not used for this queue's default order."

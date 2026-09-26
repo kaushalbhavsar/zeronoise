@@ -42,7 +42,7 @@ data/generate_synthetic_data.py   Seeded CMDB, IAM, and alert stream
 engine/schemas.py                 Pydantic v2 models
 engine/normalizer.py              Vendor-field mapping, CMDB/IAM enrich, dedup
 engine/correlator.py              Entity + time union-find (no scenario_id)
-engine/risk_scorer.py             B × K × I risk + traceable attribution
+engine/risk_scorer.py             B × K × C risk + ablation attribution
 engine/explainer.py               Deterministic cards; optional LLM prose
 engine/pipeline.py                End-to-end run + fatigue metrics
 app.py                            Interactive SOC queue
@@ -78,20 +78,24 @@ B = min(Σ fidelity_a over unique (rule_name, mitre_tactic), 35)
 K = 1 + 0.35×max(0, m-1) + 0.20×max(0, s-1)
     + 0.50×int(Exfiltration ∈ tactics or Impact ∈ tactics)
 
-asset_score = 0.35×env + 0.35×data + 0.30×criticality   (≈ 0.4–2.0)
-P_priv      = highest involved privilege weight
-I           = asset_score × P_priv
+asset_risk = 0.35×env + 0.35×data + 0.30×criticality   (≈ 0.4–2.0)
+P_priv     = highest involved privilege weight
+C          = 0.65×asset_risk + 0.35×P_priv     (configurable)
 
-risk = min(100, B × K × I × (1 - 0.45 × noise))
+RawRisk    = B × K × C
+risk_score = 100 × (1 − exp(−RawRisk / 45))
 ```
+
+`RISK_SCALE = 45` was chosen on the seed-42 dataset so multi-stage incidents saturate into the 70–90 band and isolated noise stays in the single digits. RawRisk is not shown on the analyst card. Scores are not assigned per `scenario_id`.
+
+Attribution is **counterfactual ablation**, not an independent split of B, K, and C. Each factor is replaced with its baseline (B → 2.0, K → 1.0, C → 1.0, FPR → 0) and the score drop (or FP-suppression lift) is renormalized to integer percents that sum to 100.
 
 | Factor | What it measures |
 | --- | --- |
-| Threat fidelity **B** | Vendor severity × confidence × (1 − 0.7×FPR), unique (rule, tactic) only, log volume |
+| Alert Fidelity **B** | Severity × confidence × (1 − 0.7×FPR), unique (rule, tactic) only, log volume |
 | Kill-chain **K** | Distinct ATT&CK tactics, distinct sensors, Exfiltration/Impact completion |
-| Asset impact | Highest-risk touched asset (`sandbox` 0.4 … `prod` 1.4; `public` 0.5 … `crown_jewel_pii_pci` 2.0) |
-| Identity **P_priv** | Highest-risk identity (`standard_user` 0.5 … `tier_0_domain_admin` 1.8) |
-| Noise discount | cap 0.45; bursty, high-FPR, single-stage piles (scanners) |
+| Blast radius **C** | Highest-risk asset (0.65) and highest-risk identity (0.35) |
+| FP/Noise suppression | How much the score rises if every alert is recomputed with FPR = 0 |
 
 Volume has strongly diminishing returns. 120 identical Critical alerts are not 120 attack stages.
 
