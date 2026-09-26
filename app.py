@@ -331,9 +331,22 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
             key=f"status-{item.incident.incident_id}",
         )
 
-    overview, timeline, attack, risk, response, evidence = st.tabs(
-        ["Overview", "Timeline", "ATT&CK", "Risk", "Response", "Evidence"]
-    )
+    with tab_compare:
+        left, right = st.columns(2)
+        with left:
+            st.subheader("Risk-based ranking")
+            render_queue_table(result.risk_ranked[:8], "risk")
+        with right:
+            st.subheader("Legacy SIEM ranking")
+            st.caption("naive_score = Σ SEVERITY_WEIGHTS[raw_alert]  (no dedup; Critical=15)")
+            render_queue_table(result.legacy_ranked[:8], "legacy")
+        st.plotly_chart(comparison_chart(result), width="stretch")
+        if metrics.ranking_inverted:
+            st.success(
+                "The stealthy crown-jewel breach outranks the Critical sandbox "
+                "scanner on risk, while the legacy queue does the opposite. "
+                "That is the alert-fatigue failure mode this engine exists to fix."
+            )
 
     with overview:
         st.write(card.executive_summary)
@@ -405,11 +418,49 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
                 st.write(
                     f"**{driver.name.replace('_', ' ')}** · {driver.contribution_pct:.1f}%"
                 )
-                for line in driver.evidence[:2]:
-                    st.caption(line)
-        st.caption(
-            f"SIEM rank #{item.naive_siem_rank} uses raw severity×volume only. "
-            "It is not used for this queue's default order."
+                for line in driver.evidence:
+                    st.write(f"- {line}")
+            st.markdown("**Deduplicated alert IDs**")
+            st.code("\n".join(card.alert_ids))
+            if card.edges:
+                st.markdown("**Correlation edges**")
+                st.dataframe(
+                    [
+                        {
+                            "from": edge.source_alert_id,
+                            "to": edge.target_alert_id,
+                            "relationship": edge.relationship_type,
+                            "delta_min": edge.time_delta_minutes,
+                            "strength": edge.correlation_strength,
+                        }
+                        for edge in card.edges
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+            st.markdown("**Timeline**")
+            timeline = [
+                {
+                    "first_seen": (alert.first_seen or alert.timestamp).isoformat(),
+                    "last_seen": (alert.last_seen or alert.timestamp).isoformat(),
+                    "id": alert.alert_id,
+                    "product": alert.source_product,
+                    "severity": alert.severity_raw,
+                    "tactic": alert.mitre_tactic,
+                    "rule": alert.rule_name,
+                    "events": alert.event_count,
+                    "original_alert_ids": ",".join(alert.original_alert_ids or alert.member_alert_ids),
+                }
+                for alert in scored.incident.alerts
+            ]
+            st.dataframe(timeline, width="stretch", hide_index=True)
+
+    with tab_method:
+        st.subheader("Why this is not a black box")
+        st.write(
+            "Every incident score is a weighted sum of six bounded components, "
+            "then a noise discount that can only reduce the result. The same "
+            "dataset and config always produce the same ranks."
         )
 
     with response:
