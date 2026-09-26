@@ -78,20 +78,67 @@ INFRA_HOST_TOKENS: tuple[str, ...] = (
     "waf-vip",
 )
 
-# Additive risk weights. Must sum to 1.0 so attribution is a partition
-# of the pre-noise score.
-RISK_WEIGHTS: dict[str, float] = {
-    "business_impact": 0.28,
-    "identity_privilege": 0.14,
-    "attack_progression": 0.26,
-    "signal_quality": 0.16,
-    "blast_radius": 0.10,
-    "severity_residual": 0.06,
+# Base threat fidelity B. Repeated copies of the same (rule, tactic)
+# do not add another term; volume only enters through log1p.
+FIDELITY_CAP = 35.0
+FIDELITY_FPR_COEFF = 0.70
+FIDELITY_VOLUME_COEFF = 0.10
+
+# Kill-chain progression K.
+PROGRESSION_BASE = 1.0
+PROGRESSION_TACTIC_COEFF = 0.35
+PROGRESSION_SENSOR_COEFF = 0.20
+PROGRESSION_COMPLETION_BONUS = 0.50
+COMPLETION_TACTICS: frozenset[str] = frozenset({"Exfiltration", "Impact"})
+
+# Asset impact tables. Highest-risk touched asset wins.
+ENVIRONMENT_WEIGHT: dict[str, float] = {
+    "sandbox": 0.4,
+    "dev": 0.7,
+    "staging": 1.0,
+    "prod": 1.4,
+}
+DATA_WEIGHT: dict[str, float] = {
+    "public": 0.5,
+    "internal": 0.9,
+    "confidential": 1.4,
+    "crown_jewel_pii_pci": 2.0,
+}
+CRITICALITY_WEIGHT: dict[int, float] = {
+    1: 0.4,
+    2: 0.8,
+    3: 1.2,
+    4: 1.6,
+    5: 2.0,
+}
+ASSET_ENV_BLEND = 0.35
+ASSET_DATA_BLEND = 0.35
+ASSET_CRIT_BLEND = 0.30
+ASSET_SCORE_MIN = 0.4
+ASSET_SCORE_MAX = 2.0
+
+# Identity impact. Highest-risk involved identity wins (P_priv).
+PRIVILEGE_WEIGHT: dict[str, float] = {
+    "standard_user": 0.5,
+    "service_account": 1.0,
+    "tier_1_cloud_admin": 1.4,
+    "tier_0_domain_admin": 1.8,
 }
 
-# Maximum fraction of the raw weighted score that bursty, high-FPR
+# Unknown CMDB/IAM context is not treated as crown-jewel or as zero.
+NEUTRAL_IMPACT = 0.90
+NEUTRAL_PRIVILEGE = 0.70
+# No observed identity: floor so the B×K×I product does not collapse to 0.
+UNOBSERVED_PRIVILEGE = 0.50
+
+# Maximum fraction of the pre-noise product that bursty, high-FPR
 # incidents can lose. Noise never increases rank.
 NOISE_DISCOUNT_CAP = 0.45
+
+# Aliases used by the explainer when picking the highest-sensitivity asset.
+ENV_SCORE = ENVIRONMENT_WEIGHT
+SENSITIVITY_SCORE = DATA_WEIGHT
+PRIVILEGE_SCORE = PRIVILEGE_WEIGHT
 
 # Optional explanation-only LLM. Disabled by default; the engine is
 # fully offline. When enabled the model may rewrite prose but cannot
@@ -120,40 +167,3 @@ SEVERITY_RANK: dict[str, int] = {
     "Critical": 4,
 }
 
-ENV_SCORE: dict[str, float] = {
-    "prod": 1.00,
-    "staging": 0.45,
-    "dev": 0.25,
-    "sandbox": 0.08,
-}
-
-SENSITIVITY_SCORE: dict[str, float] = {
-    "crown_jewel_pii_pci": 1.00,
-    "confidential": 0.70,
-    "internal": 0.35,
-    "public": 0.10,
-}
-
-# Unknown CMDB/IAM context is not treated as crown-jewel or as zero.
-NEUTRAL_IMPACT = 0.35
-NEUTRAL_PRIVILEGE = 0.35
-
-PRIVILEGE_SCORE: dict[str, float] = {
-    "tier_0_domain_admin": 1.00,
-    "tier_1_cloud_admin": 0.85,
-    "service_account": 0.70,
-    "standard_user": 0.35,
-}
-
-LATE_STAGE_SCORE: dict[str, float] = {
-    "Impact": 1.00,
-    "Exfiltration": 1.00,
-    "Collection": 0.75,
-    "Lateral Movement": 0.70,
-    "Credential Access": 0.55,
-    "Privilege Escalation": 0.50,
-    "Persistence": 0.40,
-    "Discovery": 0.25,
-    "Execution": 0.20,
-    "Initial Access": 0.15,
-}

@@ -165,8 +165,8 @@ def contrastive_explanation(
     a, b = scored, other
     a_events = a.incident.total_event_count
     b_events = b.incident.total_event_count
-    a_impact = next(d.score for d in a.risk.drivers if d.name == "business_impact")
-    b_impact = next(d.score for d in b.risk.drivers if d.name == "business_impact")
+    a_impact = next(d.score for d in a.risk.drivers if d.name == "asset_impact")
+    b_impact = next(d.score for d in b.risk.drivers if d.name == "asset_impact")
     a_prog = next(d.score for d in a.risk.drivers if d.name == "attack_progression")
     b_prog = next(d.score for d in b.risk.drivers if d.name == "attack_progression")
     volume_note = (
