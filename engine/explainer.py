@@ -26,6 +26,7 @@ from config import (
     LLM_TIMEOUT_SECONDS,
     SENSITIVITY_SCORE,
 )
+from engine.readability import enforce_each, enforce_readability
 from engine.schemas import (
     Asset,
     Identity,
@@ -39,7 +40,29 @@ HIGH_VALUE = "crown_jewel_pii_pci"
 BRACKET_ID = re.compile(r"\[([A-Za-z0-9._:-]+)\]")
 IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
-LLM_SYSTEM_PROMPT = """You are assisting a SOC analyst.
+LLM_SYSTEM_PROMPT = """You write security explanations for busy SOC analysts and business users.
+
+Use plain English.
+
+Keep sentences short and direct.
+
+Prefer common words over formal or academic language.
+
+Use active voice.
+
+Explain necessary security jargon briefly.
+
+Do not remove important technical evidence.
+
+Do not invent facts.
+
+Your final response must achieve a Flesch Reading Ease score of at least 70.
+
+Aim for sentences of 8–18 words.
+
+Avoid sentences longer than 25 words.
+
+If a sentence is complex, split it into two or more sentences.
 
 You may only use facts present in the supplied incident JSON.
 
@@ -51,7 +74,7 @@ Risk-driver percentages must exactly match the deterministic values supplied by 
 
 Do not modify risk_score, priority_rank, or naive_siem_rank.
 
-Describe uncertainty explicitly. Prefer “unlikely to be isolated noise” over “definitely malicious”.
+Describe uncertainty explicitly. Prefer “unlikely to be a single false alert” over “definitely malicious”.
 
 Return JSON with exactly these keys:
   executive_summary (string)
@@ -142,47 +165,60 @@ def _kill_chain_ordered(tactics: list[str]) -> bool:
     return indices == sorted(indices) and len(indices) >= 2
 
 
+def _who(scored: ScoredIncident) -> str:
+    identities = _identities(scored)
+    if identities:
+        return identities[0].user_id
+    if scored.incident.unique_users:
+        return scored.incident.unique_users[0]
+    return "an unknown user"
+
+
+def _where(scored: ScoredIncident) -> str:
+    assets = _assets(scored)
+    if assets:
+        jewel = max(assets, key=lambda asset: SENSITIVITY_SCORE[asset.data_sensitivity])
+        return jewel.hostname
+    if scored.incident.unique_hosts:
+        return scored.incident.unique_hosts[0]
+    return "an unknown host"
+
+
 def deterministic_summary(scored: ScoredIncident) -> str:
     inc = scored.incident
-    assets = _assets(scored)
-    identities = _identities(scored)
-    who = identities[0].user_id if identities else (
-        inc.unique_users[0] if inc.unique_users else "an unresolved identity"
-    )
-    if assets:
-        jewel = max(assets, key=lambda a: SENSITIVITY_SCORE[a.data_sensitivity])
-        where = f"{jewel.hostname} ({jewel.environment}, {jewel.data_sensitivity})"
-    elif inc.unique_hosts:
-        where = inc.unique_hosts[0]
-    else:
-        where = "unattributed systems"
-    chain = " → ".join(inc.unique_tactics) if inc.unique_tactics else "an unmapped tactic"
+    who = _who(scored)
+    where = _where(scored)
     sensors = ", ".join(inc.unique_products) or "unknown sensors"
     start = _utc_clock(inc.first_seen)
+    first = inc.unique_tactics[0] if inc.unique_tactics else "an unmapped tactic"
+    last = inc.unique_tactics[-1] if len(inc.unique_tactics) > 1 else None
+    steps = f"The first step is {first}."
+    if last:
+        steps = f"The first step is {first}. The last step is {last}."
     return (
-        f"From {start}, {who} was observed against {where} across {len(inc.alerts)} "
-        f"correlated alert group(s) ({inc.total_event_count} raw events) from {sensors}. "
-        f"The mapped sequence is {chain}. "
-        f"Risk {scored.risk.risk_score:.1f}/100; legacy SIEM score {scored.legacy_score:.0f}."
+        f"{who} was seen on {where} starting at {start}. "
+        f"{sensors} reported {len(inc.alerts)} related alerts. "
+        f"{steps} "
+        f"The risk score is {scored.risk.risk_score:.0f}."
     )
 
 
 def deterministic_narrative(scored: ScoredIncident) -> str:
     inc = scored.incident
     parts = [
-        f"Incident {inc.incident_id} opened at {inc.first_seen.isoformat()} "
-        f"and last updated at {inc.last_seen.isoformat()}."
+        f"Incident {inc.incident_id} started at {_utc_clock(inc.first_seen)}.",
+        f"Last activity was at {_utc_clock(inc.last_seen)}.",
     ]
     if inc.unique_tactics:
-        parts.append("Observed ATT&CK progression: " + " → ".join(inc.unique_tactics) + ".")
+        parts.append("The ATT&CK steps are " + ", ".join(inc.unique_tactics) + ".")
     parts.append(
-        f"Evidence arrived from {', '.join(inc.unique_products) or 'unknown sensors'} "
-        f"across {len(inc.alerts)} deduplicated alerts ({inc.total_event_count} raw events)."
+        f"{', '.join(inc.unique_products) or 'Unknown sensors'} sent "
+        f"{len(inc.alerts)} alerts."
     )
     if inc.unique_users:
-        parts.append("Identities: " + ", ".join(inc.unique_users) + ".")
+        parts.append("Users include " + ", ".join(inc.unique_users) + ".")
     if inc.unique_hosts:
-        parts.append("Hosts: " + ", ".join(inc.unique_hosts) + ".")
+        parts.append("Hosts include " + ", ".join(inc.unique_hosts) + ".")
     return " ".join(parts)
 
 
@@ -266,46 +302,40 @@ def deterministic_containment(scored: ScoredIncident) -> list[str]:
     loudest = max(inc.alerts, key=lambda alert: (alert.false_positive_rate, alert.event_count))
 
     for user_id in privileged:
-        add(f"Disable or rotate {user_id} credentials.")
+        add(f"Disable {user_id} and rotate its credentials.")
     for user_id in cred_users:
         if user_id not in privileged:
-            add(f"Disable or rotate {user_id} credentials.")
+            add(f"Disable {user_id} and rotate its credentials.")
 
     if sandbox_only:
         for host in isolate_hosts:
-            add(
-                f"Contain {host} in the sandbox VLAN; do not isolate production "
-                "systems for this alert."
-            )
+            add(f"Keep {host} in the sandbox VLAN. Do not isolate production for this alert.")
     else:
         for host in isolate_hosts:
             add(f"Isolate {host} from the network.")
 
     for host in egress_hosts:
-        add(f"Restrict outbound connectivity from {host}.")
+        add(f"Block outbound traffic from {host}.")
     if _has_edr(inc.unique_products):
-        add("Preserve EDR telemetry before remediation.")
+        add("Preserve EDR logs before you change the host.")
     for user_id in auth_users:
-        add(f"Review authentication activity associated with {user_id}.")
+        add(f"Review sign-in activity for {user_id}.")
     for host in impact_hosts:
-        add(f"Stop backup-deletion and destructive tooling on {host}.")
+        add(f"Stop backup deletion on {host}.")
     for host in persist_hosts:
-        add(f"Review scheduled tasks and new services on {host}.")
+        add(f"Review new services on {host}.")
     if mean_fpr >= 0.60:
         add(
-            f"Review high-FP rule '{loudest.rule_name}' (FPR {loudest.false_positive_rate:.2f}) "
-            "before paging production."
+            f"Review the noisy rule '{loudest.rule_name}' before you page production. "
+            f"Its false-positive rate is {loudest.false_positive_rate:.2f}."
         )
     if not actions:
         if inc.unique_hosts:
-            add(f"Validate ownership of {inc.unique_hosts[0]} in CMDB before closing.")
+            add(f"Check CMDB ownership of {inc.unique_hosts[0]} before you close this case.")
         elif inc.unique_users:
-            add(f"Review recent activity for {inc.unique_users[0]} before closing.")
+            add(f"Review recent activity for {inc.unique_users[0]} before you close this case.")
         else:
-            add(
-                "Validate the alert against CMDB ownership and close as noise only after "
-                "confirming no shared identity or host with a higher-risk incident."
-            )
+            add("Check the host owner in CMDB before you close this case.")
     return actions
 
 
@@ -316,26 +346,21 @@ def contrastive_explanation(
     if other is None or other.incident.incident_id == scored.incident.incident_id:
         return None
     a, b = scored, other
-    volume_note = (
-        f"{a.incident.incident_id} has {a.incident.total_event_count} raw events versus "
-        f"{b.incident.incident_id} with {b.incident.total_event_count}."
-    )
     if a.risk.risk_score >= b.risk.risk_score:
         relation = (
-            f"{a.incident.incident_id} outranks {b.incident.incident_id} on risk "
-            f"({a.risk.risk_score:.1f} vs {b.risk.risk_score:.1f})"
+            f"{a.incident.incident_id} outranks {b.incident.incident_id} on risk."
         )
     else:
         relation = (
-            f"{a.incident.incident_id} ranks below {b.incident.incident_id} on risk "
-            f"({a.risk.risk_score:.1f} vs {b.risk.risk_score:.1f})"
+            f"{a.incident.incident_id} ranks below {b.incident.incident_id} on risk."
         )
     return (
-        f"Legacy SIEM ranks by raw severity × volume (naive score {a.legacy_score:.0f} "
-        f"vs {b.legacy_score:.0f}, SIEM #{a.naive_siem_rank} vs #{b.naive_siem_rank}). "
-        f"{relation} because blast-radius C is {a.risk.blast_c:.2f} vs {b.risk.blast_c:.2f} "
-        f"and kill-chain K is {a.risk.progression_k:.2f} vs {b.risk.progression_k:.2f}. "
-        f"{volume_note} Raw volume and vendor Critical labels are not sufficient to win the queue."
+        f"{relation} "
+        f"The scores are {a.risk.risk_score:.0f} and {b.risk.risk_score:.0f}. "
+        f"We ranked the higher one because it reached a more sensitive system. "
+        f"{a.incident.incident_id} has {a.incident.total_event_count} raw events. "
+        f"{b.incident.incident_id} has {b.incident.total_event_count}. "
+        f"Alert count alone does not win the queue."
     )
 
 
@@ -347,54 +372,50 @@ def why_not_false_positive(scored: ScoredIncident) -> str:
     sensors = list(inc.unique_products)
     reasons: list[str] = []
     if len(sensors) >= 2:
-        reasons.append(
-            f"{', '.join(sensors[:-1])}, and {sensors[-1]} independently observed the activity"
-            if len(sensors) > 2
-            else f"{sensors[0]} and {sensors[1]} independently observed the activity"
-        )
+        reasons.append(f"{sensors[0]} and {sensors[1]} both saw related activity.")
     if len(tactics) >= 2:
-        reasons.append(
-            "a temporally coherent sequence spanning " + ", ".join(tactics)
-            if _kill_chain_ordered(tactics)
-            else "more than one MITRE tactic (" + ", ".join(tactics) + ")"
-        )
+        if _kill_chain_ordered(tactics):
+            reasons.append("The ATT&CK steps follow a real order. They are " + ", ".join(tactics) + ".")
+        else:
+            reasons.append("More than one MITRE tactic is present. They are " + ", ".join(tactics) + ".")
     if "Credential Access" in tactics:
-        reasons.append("credential-access behavior")
+        reasons.append("We saw credential access, meaning a password or token may have been stolen.")
     if "Lateral Movement" in tactics:
-        reasons.append("lateral movement")
+        reasons.append("We saw lateral movement, meaning the attacker moved to another host.")
     if any(asset.data_sensitivity == HIGH_VALUE for asset in assets):
         jewel = next(asset.hostname for asset in assets if asset.data_sensitivity == HIGH_VALUE)
-        reasons.append(f"a high-value destination ({jewel})")
+        reasons.append(f"The path reached {jewel}, a high-value system.")
     if any(ident.privilege_tier in PRIVILEGED_TIERS for ident in identities):
         who = next(
             ident.user_id for ident in identities if ident.privilege_tier in PRIVILEGED_TIERS
         )
-        reasons.append(f"a privileged account ({who})")
-    if "Exfiltration" in tactics or "Impact" in tactics:
-        late = "exfiltration" if "Exfiltration" in tactics else "impact"
-        reasons.append(f"a late-stage {late} signal")
+        reasons.append(f"{who} is a privileged account.")
+    if "Exfiltration" in tactics:
+        reasons.append("We saw exfiltration, meaning data may have left the network.")
+    elif "Impact" in tactics:
+        reasons.append("We saw Impact activity, meaning data or backups may be harmed.")
 
     mean_fpr = (
         sum(alert.false_positive_rate * alert.event_count for alert in inc.alerts)
         / max(1, inc.total_event_count)
     )
     if len(reasons) >= 2:
-        lead, *rest = reasons
-        extra = "; ".join(rest)
         return (
-            f"This is unlikely to be isolated noise because {lead}"
-            + (f", plus {extra}" if extra else "")
-            + ". That assessment is uncertain and should be confirmed on the cited timeline."
+            "This is unlikely to be a single false alert. "
+            + " ".join(reasons[:3])
+            + " Confirm this on the timeline."
         )
     if mean_fpr >= 0.6 and len(tactics) <= 2:
         return (
-            f"This may still be isolated noise: mean historical FPR is {mean_fpr:.2f} "
-            f"across {inc.total_event_count} raw events, with only {len(tactics)} tactic(s) "
-            f"from {len(sensors)} sensor(s). New kill-chain stages would change that assessment."
+            f"This may still be isolated noise. "
+            f"The mean false-positive rate is {mean_fpr:.2f}. "
+            f"We only see {len(tactics)} ATT&CK tactic from {len(sensors)} sensor. "
+            f"A later attack stage would change that view."
         )
     return (
-        f"The available signals are limited ({len(tactics)} tactic(s), {len(sensors)} sensor(s), "
-        f"mean FPR {mean_fpr:.2f}). Treat as uncertain until more independent evidence appears."
+        f"The signals are still thin. "
+        f"We have {len(tactics)} tactic and {len(sensors)} sensor. "
+        f"Treat this as uncertain until more sensors agree."
     )
 
 
@@ -430,6 +451,17 @@ def build_card(
     inc = scored.incident
     contrastive = contrastive_explanation(scored, contrast_with)
     actions = deterministic_containment(scored)
+    summary = deterministic_summary(scored)
+    narrative = deterministic_narrative(scored)
+    fp_text = why_not_false_positive(scored)
+    timeline = attack_timeline(scored)
+    drivers = []
+    for driver in scored.risk.drivers:
+        plain = enforce_readability(
+            driver.evidence,
+            f"This factor changed the score. See {driver.factor}.",
+        )
+        drivers.append(driver.model_copy(update={"evidence": plain}))
     return IncidentCard(
         incident_id=inc.incident_id,
         title=scored.title,
@@ -452,15 +484,26 @@ def build_card(
         assets=_assets(scored),
         identities=_identities(scored),
         alert_facts=_alert_facts(scored),
-        executive_summary=deterministic_summary(scored),
-        narrative=deterministic_narrative(scored),
-        containment=actions,
-        recommended_actions=list(actions),
-        why_prioritized=list(scored.risk.drivers),
-        why_not_false_positive=why_not_false_positive(scored),
-        attack_timeline=attack_timeline(scored),
-        contrastive=contrastive,
-        contrastive_explanation=contrastive or "",
+        executive_summary=enforce_readability(
+            summary,
+            f"{_who(scored)} was seen on {_where(scored)}. The risk score is {scored.risk.risk_score:.0f}.",
+        ),
+        narrative=enforce_readability(
+            narrative,
+            f"Incident {inc.incident_id} has {len(inc.alerts)} related alerts.",
+        ),
+        containment=enforce_each(actions, actions),
+        recommended_actions=enforce_each(list(actions), list(actions)),
+        why_prioritized=drivers,
+        why_not_false_positive=enforce_readability(
+            fp_text,
+            "This may be a real attack. Confirm the timeline before you close it.",
+        ),
+        attack_timeline=enforce_each(timeline, timeline),
+        contrastive=enforce_readability(contrastive, contrastive) if contrastive else None,
+        contrastive_explanation=(
+            enforce_readability(contrastive, contrastive) if contrastive else ""
+        ),
         risk=scored.risk,
         alert_ids=list(inc.alert_ids),
         edges=list(inc.edges),
@@ -746,17 +789,21 @@ def apply_llm_prose(card: IncidentCard, rewritten: dict[str, Any]) -> IncidentCa
     if not any(provided) or not all(accepted):
         return card
     if summary_ok:
-        updates["executive_summary"] = summary_ok
+        updates["executive_summary"] = enforce_readability(summary_ok, card.executive_summary)
     if contrastive_ok:
-        updates["contrastive"] = contrastive_ok
-        updates["contrastive_explanation"] = contrastive_ok
+        plain = enforce_readability(contrastive_ok, card.contrastive_explanation or contrastive_ok)
+        updates["contrastive"] = plain
+        updates["contrastive_explanation"] = plain
     if fp_ok:
-        updates["why_not_false_positive"] = fp_ok
+        updates["why_not_false_positive"] = enforce_readability(
+            fp_ok, card.why_not_false_positive
+        )
     if timeline_ok:
-        updates["attack_timeline"] = timeline_ok
+        updates["attack_timeline"] = enforce_each(timeline_ok, list(card.attack_timeline))
     if actions_ok:
-        updates["recommended_actions"] = actions_ok
-        updates["containment"] = actions_ok
+        plain_actions = enforce_each(actions_ok, list(card.recommended_actions or card.containment))
+        updates["recommended_actions"] = plain_actions
+        updates["containment"] = plain_actions
     updates["llm_enhanced"] = True
     updates["explanation_source"] = "llm"
     return card.model_copy(update=updates)

@@ -155,15 +155,15 @@ def _fidelity_from_buckets(buckets: dict[tuple[str, str], dict]) -> tuple[float,
         )
         scores.append(score)
         evidence.append(
-            f"{rule} / {tactic} · sev={bucket['severity']} "
-            f"n={events} → {score:.3f}"
+            f"The {rule} rule fired during {tactic}. "
+            f"Severity is {bucket['severity']}. It covers {events} events."
         )
     total = sum(scores)
     capped = min(total, FIDELITY_CAP)
     if total > FIDELITY_CAP:
-        evidence.append(f"Σ fidelity={total:.3f} capped at {FIDELITY_CAP:.1f}")
+        evidence.append(f"Alert quality was capped at {FIDELITY_CAP:.0f}.")
     else:
-        evidence.append(f"Σ fidelity={total:.3f} over {len(scores)} unique (rule, tactic)")
+        evidence.append(f"Alert quality uses {len(scores)} unique rule and tactic pairs.")
     return capped, evidence
 
 
@@ -192,10 +192,13 @@ def score_progression(incident: CandidateIncident) -> tuple[float, list[str]]:
         + PROGRESSION_COMPLETION_BONUS * int(completion)
     )
     evidence = [
-        f"distinct tactics m={m} ({', '.join(tactics) or 'none'})",
-        f"distinct sensors s={s} ({', '.join(sensors) or 'none'})",
-        f"completion={completion} (Exfiltration or Impact)",
-        f"K={value:.3f}",
+        f"This incident uses {m} ATT&CK tactics.",
+        f"It was seen by {s} sensors.",
+        (
+            "A late stage is present. That means Exfiltration or Impact."
+            if completion
+            else "No late stage is present. We did not see Exfiltration or Impact."
+        ),
     ]
     return value, evidence
 
@@ -221,9 +224,9 @@ def score_business_impact(incident: CandidateIncident) -> tuple[float, list[str]
             }
         )
         note = (
-            f"Unresolved host(s) {', '.join(unresolved)}; applying neutral impact {NEUTRAL_IMPACT:.2f}."
+            f"Host {', '.join(unresolved)} is not in CMDB. We used a mid impact score."
             if unresolved
-            else f"No CMDB match; applying neutral impact {NEUTRAL_IMPACT:.2f}."
+            else "No CMDB match. We used a mid impact score."
         )
         return NEUTRAL_IMPACT, [note]
     best = -1.0
@@ -234,9 +237,8 @@ def score_business_impact(incident: CandidateIncident) -> tuple[float, list[str]
             best = value
             evidence = [
                 (
-                    f"{asset.hostname} env={asset.environment} "
-                    f"sensitivity={asset.data_sensitivity} "
-                    f"criticality={asset.business_criticality} → {value:.3f}"
+                    f"{asset.hostname} is a {asset.environment} system. "
+                    f"It holds {asset.data_sensitivity} data."
                 )
             ]
     return best, evidence
@@ -255,10 +257,10 @@ def score_privilege(incident: CandidateIncident) -> tuple[float, list[str]]:
         )
         if claimed:
             return NEUTRAL_PRIVILEGE, [
-                f"IAM miss for {', '.join(claimed)}; applying neutral privilege {NEUTRAL_PRIVILEGE:.2f}."
+                f"IAM has no record for {', '.join(claimed)}. We used a mid privilege score."
             ]
         return UNOBSERVED_PRIVILEGE, [
-            f"No identity observed; applying unobserved privilege {UNOBSERVED_PRIVILEGE:.2f}."
+            "No user was seen. We used a low privilege score."
         ]
     best = -1.0
     evidence: list[str] = []
@@ -267,8 +269,8 @@ def score_privilege(incident: CandidateIncident) -> tuple[float, list[str]]:
         if value >= best:
             best = value
             evidence = [
-                f"{identity.user_id} ({identity.department}) "
-                f"tier={identity.privilege_tier} → P_priv={value:.3f}"
+                f"{identity.user_id} is in {identity.department}. "
+                f"The account tier is {identity.privilege_tier}."
             ]
     return best, evidence
 
@@ -325,7 +327,13 @@ def _title(incident: CandidateIncident) -> str:
 
 
 def _join_evidence(lines: list[str]) -> str:
-    return "; ".join(lines)
+    sentences = []
+    for line in lines:
+        text = line.strip()
+        if not text:
+            continue
+        sentences.append(text if text.endswith((".", "!", "?")) else text + ".")
+    return " ".join(sentences)
 
 
 def integer_partition(weights: dict[str, float], order: tuple[str, ...]) -> dict[str, int]:

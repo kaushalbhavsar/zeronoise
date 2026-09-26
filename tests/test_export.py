@@ -46,7 +46,7 @@ def test_case_markdown_matches_workspace_context() -> None:
     assert "Affected destination:" in text
     assert "Decision brief" in text
     assert "Detections" in text
-    assert "How the events are linked" in text
+    assert "Why these alerts are connected" in text
     assert "handoff: confirm dest volume" in text
     assert "You · status: New -> Investigating" in text
     assert "not a confidence" in text.lower() or "not a confidence percentage" in text

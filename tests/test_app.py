@@ -78,14 +78,14 @@ def test_opening_case_replaces_queue_with_workspace() -> None:
     assert "Initial identity" in blob
     assert "Chronology" in blob
     assert "ATT&CK path" in blob
-    assert "Why this score" in blob
+    assert "Why this ranks high" in blob
     assert "Recommended work" in blob
     assert "Detections" in blob
     assert "Session activity" in blob
     assert "zn-heading" in blob
     assert "zn-kind" in blob
-    assert "Why this incident ranks higher" in blob or any(
-        "Why this incident ranks higher" in str(item.value) for item in at.markdown
+    assert "Why this ranks high" in blob or any(
+        "Why this ranks high" in str(item.value) for item in at.markdown
     )
     assert "Destructive" not in blob
     assert "Why the legacy SIEM got this wrong" not in blob

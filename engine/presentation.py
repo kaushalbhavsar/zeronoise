@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import timezone
 
+from engine.readability import enforce_readability
 from engine.schemas import EnrichedAlert, GraphEdge, IncidentCard, RiskDriver, ScoredIncident
 
 DRIVER_LABELS = {
@@ -415,16 +416,23 @@ def urgency_sentence(item: ScoredIncident) -> str:
     roles = incident_roles(item)
     asset = roles["affected_asset"] if roles["affected_asset"] != "—" else "an unresolved host"
     if "Exfiltration" in tactics and "Crown Jewel" in badges:
-        return f"Observed exfiltration involving {asset}, a crown-jewel production system."
-    if "Impact" in tactics:
-        return f"Destructive activity is in progress on {asset}."
-    if "Lateral Movement" in tactics and "Credential Access" in tactics:
-        return f"Credential access is followed by lateral movement on {asset}."
-    if "High FP Rule" in badges and "Sandbox" in badges:
-        return f"High-volume Critical alerts are concentrated on sandbox host {asset}."
-    if tactics:
-        return f"Observed {' → '.join(item.incident.unique_tactics)} on {asset}."
-    return f"{item.incident.total_event_count} raw events collapsed into this incident."
+        text = f"Sensors saw data leave {asset}. That system stores sensitive data."
+    elif "Impact" in tactics:
+        text = f"Harmful changes are running on {asset}."
+    elif "Lateral Movement" in tactics and "Credential Access" in tactics:
+        text = f"Stolen credentials were used. The attacker then moved toward {asset}."
+    elif "High FP Rule" in badges and "Sandbox" in badges:
+        text = f"Many Critical alerts hit sandbox host {asset}."
+    elif tactics:
+        first = item.incident.unique_tactics[0]
+        last = item.incident.unique_tactics[-1]
+        if first == last:
+            text = f"We saw {first} on {asset}."
+        else:
+            text = f"We saw {first}, then {last}, on {asset}."
+    else:
+        text = f"{item.incident.total_event_count} raw alerts became this incident."
+    return enforce_readability(text, f"Review the activity on {asset}.")
 
 
 def badge_tone(name: str) -> str:
@@ -515,44 +523,45 @@ def why_this_matters(item: ScoredIncident) -> str:
     badges = set(context_badges(item))
     tactics = set(item.incident.unique_tactics)
     if "Exfiltration" in tactics and "Crown Jewel" in badges:
-        return (
-            "Assessment: observed exfiltration involves a crown-jewel system, "
-            "so data exposure is the primary concern. Confirm destination and volume "
-            "on the cited timeline before treating this as confirmed theft."
+        text = (
+            "This incident ranks high because data left a sensitive system. "
+            "Confirm the destination and size on the timeline. "
+            "Do not treat this as proven theft yet."
         )
-    if "Impact" in tactics:
-        return (
-            "Assessment: Impact-stage activity can destroy recoverability. "
-            "The mapped sequence supports urgency; confirm the host is still reachable."
+    elif "Impact" in tactics:
+        text = (
+            "Impact activity can wipe backups. "
+            "Confirm the host is still online."
         )
-    if "High FP Rule" in badges and "Sandbox" in badges:
-        return (
-            "Assessment: volume is high but the host is sandbox-only and the rule "
-            "has a high historical false-positive rate. This may be noise."
+    elif "High FP Rule" in badges and "Sandbox" in badges:
+        text = (
+            "Many alerts fired. The host is only a sandbox. "
+            "The rule is often wrong. This may be noise."
         )
-    if "Lateral Movement" in tactics and "Credential Access" in tactics:
-        return (
-            "Assessment: credential access followed by lateral movement is consistent "
-            "with an expanding intrusion. Privilege and destination still need confirmation."
+    elif "Lateral Movement" in tactics and "Credential Access" in tactics:
+        text = (
+            "The attacker stole credentials. They then moved to another host. "
+            "Confirm the privilege and the destination."
         )
-    if "Crown Jewel" in badges or "PCI/PII" in badges:
-        return (
-            "Assessment: a sensitive asset is in scope, so the incident outranks "
-            "volume-only noise even when vendor severity is moderate."
+    elif "Crown Jewel" in badges or "PCI/PII" in badges:
+        text = (
+            "A sensitive system is in scope. "
+            "That is why this ranks above noisy volume."
         )
-    return (
-        "Assessment: ranking reflects fidelity, kill-chain depth, and asset or "
-        "identity context — not raw alert count. Uncertainty remains until "
-        "independent sensors or later stages appear."
-    )
+    else:
+        text = (
+            "We rank by alert quality, attack depth, and the system at risk. "
+            "We do not rank by alert count alone."
+        )
+    return enforce_readability(text, "This incident needs review. Check the timeline.")
 
 
 def evidence_summary(item: ScoredIncident) -> str:
     sensors = ", ".join(item.incident.unique_products) or "no mapped sensors"
     tactics = " → ".join(item.incident.unique_tactics) or "no mapped tactics"
-    return (
-        f"{len(item.incident.alerts)} deduplicated events from {sensors} "
-        f"({item.incident.total_event_count} raw). Mapped sequence: {tactics}."
+    return enforce_readability(
+        f"{len(item.incident.alerts)} alerts came from {sensors}. They map to {tactics}.",
+        f"{len(item.incident.alerts)} alerts support this incident.",
     )
 
 
@@ -560,7 +569,7 @@ def next_recommended_action(card: IncidentCard) -> str:
     actions = card.recommended_actions or card.containment
     if actions:
         return actions[0]
-    return "Review the timeline and assign an owner before closing."
+    return "Review the timeline. Then assign an owner before you close the case."
 
 
 def vendor_severity(item: ScoredIncident) -> str:
