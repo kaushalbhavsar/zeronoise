@@ -117,6 +117,12 @@ Every card answers six questions from incident facts only:
 
 Each timeline line is chronological and cites a real alert ID, for example `09:12  [ALRT-A-001] Initial Access — Anomalous VPN login for usr_svc_deploy on prd-app-02`. The explainer never invents alert IDs, hosts, users, techniques, IPs, or timestamps. False-positive wording stays uncertain (`unlikely to be isolated noise`), never `definitely malicious`.
 
+Opening a case expands the analyst file:
+
+Executive Summary · Risk Breakdown · Affected Assets · Affected Identities · MITRE Tactics · MITRE Techniques · Attack Timeline · Correlation Evidence · Raw Alert References · Recommended Actions
+
+Recommended actions are generated from the incident's own users, hosts, sensors, and tactics — for example `Disable or rotate usr_admin_root credentials` or `Isolate prd-app-02 from the network` — never “involved hosts” when an entity ID is known.
+
 ## LLM contract
 
 Offline by default. Optional providers are selected by environment variables:

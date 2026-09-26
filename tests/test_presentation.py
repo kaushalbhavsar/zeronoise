@@ -7,6 +7,7 @@ from engine.presentation import (
     correlation_evidence,
     rank_delta,
     rank_delta_label,
+    raw_alert_ids,
 )
 from engine.risk_scorer import score_incident, score_incidents
 from tests.test_risk_scoring import _breach_incident, _scanner_incident
@@ -88,3 +89,23 @@ def test_run_pipeline_accepts_path_strings() -> None:
     evidence = correlation_evidence(top)
     assert evidence
     assert all(row["from"] in top.incident.alert_ids for row in evidence)
+    originals = raw_alert_ids(top)
+    assert originals
+    assert set(top.incident.alert_ids) <= set(originals) or len(originals) >= len(top.incident.alert_ids)
+
+
+def test_seed_pipeline_actions_name_real_crown_jewel_entities() -> None:
+    result = run_pipeline(str(ALERTS_PATH), str(CMDB_PATH), str(IAM_PATH), use_llm=False)
+    crown = next(
+        card
+        for card in result.cards
+        if "usr_admin_root" in card.users and "prd-billing-db-01" in card.hosts
+    )
+    blob = " ".join(crown.recommended_actions)
+    assert "Disable or rotate usr_admin_root credentials." in crown.recommended_actions
+    assert "Isolate prd-app-02 from the network." in crown.recommended_actions
+    assert "Restrict outbound connectivity from prd-billing-db-01." in crown.recommended_actions
+    assert "Preserve EDR telemetry before remediation." in crown.recommended_actions
+    assert "Review authentication activity associated with usr_svc_deploy." in crown.recommended_actions
+    assert "involved hosts" not in blob
+    assert "involved accounts" not in blob

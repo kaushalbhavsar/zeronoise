@@ -186,48 +186,126 @@ def deterministic_narrative(scored: ScoredIncident) -> str:
     return " ".join(parts)
 
 
+def _alert_user(alert) -> str | None:
+    if alert.entities.user_id:
+        return alert.entities.user_id
+    if alert.identity:
+        return alert.identity.user_id
+    return None
+
+
+def _alert_host(alert) -> str | None:
+    if alert.entities.host_id:
+        return alert.entities.host_id
+    if alert.asset:
+        return alert.asset.host_id
+    return None
+
+
+def _unique(values: Iterable[str | None]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            ordered.append(value)
+    return ordered
+
+
+def _has_edr(products: Iterable[str]) -> bool:
+    tokens = ("crowdstrike", "edr", "sentinelone", "defender", "carbon black")
+    return any(any(token in product.lower() for token in tokens) for product in products)
+
+
 def deterministic_containment(scored: ScoredIncident) -> list[str]:
+    """Concrete, entity-cited actions. Never 'involved hosts' when IDs exist."""
     inc = scored.incident
-    tactics = set(inc.unique_tactics)
+    identities = _identities(scored)
+    assets = _assets(scored)
     actions: list[str] = []
-    if inc.unique_users:
-        actions.append(
-            "Disable or step-up-MFA the involved identities: "
-            + ", ".join(inc.unique_users)
-            + "."
-        )
-    if "Credential Access" in tactics:
-        actions.append(
-            "Reset credentials and revoke refresh tokens for involved accounts; "
-            "check for newly created privileged group memberships."
-        )
-    if "Lateral Movement" in tactics or inc.unique_hosts:
-        hosts = ", ".join(inc.unique_hosts[:6]) or "involved hosts"
-        actions.append(f"Isolate {hosts} from production east-west paths.")
-    if "Exfiltration" in tactics or "Collection" in tactics:
-        actions.append(
-            "Block observed egress destinations and snapshot the affected datastore "
-            "for forensic preservation."
-        )
-    if "Impact" in tactics:
-        actions.append(
-            "Halt further destructive activity: disable the involved account, "
-            "block backup-deletion tools, and snapshot the host before cleanup."
-        )
-    if "Persistence" in tactics:
-        actions.append(
-            "Review scheduled tasks, new services, and persistence artifacts on "
-            "the first-seen workstation."
+    seen: set[str] = set()
+
+    def add(text: str) -> None:
+        if text and text not in seen:
+            seen.add(text)
+            actions.append(text)
+
+    privileged = [ident.user_id for ident in identities if ident.privilege_tier in PRIVILEGED_TIERS]
+    cred_users = _unique(
+        _alert_user(alert)
+        for alert in inc.alerts
+        if alert.mitre_tactic == "Credential Access"
+    )
+    auth_users = _unique(
+        _alert_user(alert)
+        for alert in inc.alerts
+        if alert.mitre_tactic == "Initial Access"
+    )
+    isolate_hosts = _unique(
+        _alert_host(alert)
+        for alert in inc.alerts
+        if alert.mitre_tactic in {"Initial Access", "Execution", "Lateral Movement", "Impact"}
+    )
+    egress_hosts = _unique(
+        _alert_host(alert)
+        for alert in inc.alerts
+        if alert.mitre_tactic in {"Exfiltration", "Collection"}
+    )
+    impact_hosts = _unique(
+        _alert_host(alert) for alert in inc.alerts if alert.mitre_tactic == "Impact"
+    )
+    persist_hosts = _unique(
+        _alert_host(alert) for alert in inc.alerts if alert.mitre_tactic == "Persistence"
+    )
+    envs = {asset.environment for asset in assets}
+    sandbox_only = bool(envs) and envs <= {"sandbox", "dev"} and "prod" not in envs
+    mean_fpr = (
+        sum(alert.false_positive_rate * alert.event_count for alert in inc.alerts)
+        / max(1, inc.total_event_count)
+    )
+    loudest = max(inc.alerts, key=lambda alert: (alert.false_positive_rate, alert.event_count))
+
+    for user_id in privileged:
+        add(f"Disable or rotate {user_id} credentials.")
+    for user_id in cred_users:
+        if user_id not in privileged:
+            add(f"Disable or rotate {user_id} credentials.")
+
+    if sandbox_only:
+        for host in isolate_hosts:
+            add(
+                f"Contain {host} in the sandbox VLAN; do not isolate production "
+                "systems for this alert."
+            )
+    else:
+        for host in isolate_hosts:
+            add(f"Isolate {host} from the network.")
+
+    for host in egress_hosts:
+        add(f"Restrict outbound connectivity from {host}.")
+    if _has_edr(inc.unique_products):
+        add("Preserve EDR telemetry before remediation.")
+    for user_id in auth_users:
+        add(f"Review authentication activity associated with {user_id}.")
+    for host in impact_hosts:
+        add(f"Stop backup-deletion and destructive tooling on {host}.")
+    for host in persist_hosts:
+        add(f"Review scheduled tasks and new services on {host}.")
+    if mean_fpr >= 0.60:
+        add(
+            f"Review high-FP rule '{loudest.rule_name}' (FPR {loudest.false_positive_rate:.2f}) "
+            "before paging production."
         )
     if not actions:
-        actions.append(
-            "Validate the alert against CMDB ownership and close as noise only after "
-            "confirming no shared identity or host with a higher-risk incident."
-        )
-    actions.append(
-        "Do not page solely because vendor severity is Critical — confirm "
-        "business impact and kill-chain progression first."
-    )
+        if inc.unique_hosts:
+            add(f"Validate ownership of {inc.unique_hosts[0]} in CMDB before closing.")
+        elif inc.unique_users:
+            add(f"Review recent activity for {inc.unique_users[0]} before closing.")
+        else:
+            add(
+                "Validate the alert against CMDB ownership and close as noise only after "
+                "confirming no shared identity or host with a higher-risk incident."
+            )
     return actions
 
 

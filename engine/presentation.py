@@ -156,6 +156,19 @@ def describe_edge(edge: GraphEdge, item: ScoredIncident) -> str:
     return edge.relationship_type.replace("_", " ").title()
 
 
+def raw_alert_ids(item: ScoredIncident) -> list[str]:
+    """Deduplicated survivor → original SIEM row IDs, order preserved."""
+    originals: list[str] = []
+    seen: set[str] = set()
+    for alert in item.incident.alerts:
+        members = alert.original_alert_ids or alert.member_alert_ids or [alert.alert_id]
+        for alert_id in members:
+            if alert_id not in seen:
+                seen.add(alert_id)
+                originals.append(alert_id)
+    return originals
+
+
 def correlation_evidence(item: ScoredIncident) -> list[dict[str, str]]:
     """Why these alerts were grouped — one row per graph edge."""
     rows: list[dict[str, str]] = []

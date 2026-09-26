@@ -4,6 +4,7 @@ from engine.explainer import (
     apply_llm_prose,
     attack_timeline,
     build_card,
+    deterministic_containment,
     enhance_with_llm,
     llm_incident_payload,
     timeline_cites_real_ids,
@@ -39,6 +40,36 @@ def test_timeline_never_invents_entities() -> None:
     assert "10.9.9.9" not in blob
     for host in known_hosts:
         assert host in blob or any(asset.hostname in blob for asset in card.assets)
+
+
+def test_recommended_actions_cite_entities_not_generic_hosts() -> None:
+    breach = score_incident(_breach_incident())
+    actions = deterministic_containment(breach)
+    blob = " ".join(actions)
+    assert actions
+    assert "u-maria-chen" in blob
+    assert "host-pci-db-01" in blob
+    assert "involved hosts" not in blob
+    assert "involved accounts" not in blob
+    assert any("Disable or rotate u-maria-chen credentials." == row for row in actions)
+    assert any("Isolate host-pci-db-01 from the network." == row for row in actions)
+    assert any("Restrict outbound connectivity from host-pci-db-01." == row for row in actions)
+    assert any("Preserve EDR telemetry before remediation." == row for row in actions)
+    assert any(
+        "Review authentication activity associated with u-maria-chen." == row
+        for row in actions
+    )
+
+
+def test_scanner_actions_stay_in_sandbox_and_name_the_rule() -> None:
+    scanner = score_incident(_scanner_incident())
+    actions = deterministic_containment(scanner)
+    blob = " ".join(actions)
+    assert "host-sandbox-web-07" in blob
+    assert "sandbox VLAN" in blob
+    assert "WAF SQLi signature match" in blob
+    assert "involved hosts" not in blob
+    assert "usr_admin_root" not in blob
 
 
 def test_why_not_false_positive_uses_deterministic_signals() -> None:
