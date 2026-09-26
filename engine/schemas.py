@@ -221,11 +221,13 @@ class IncidentCard(BaseModel):
     raw_event_count: int
     max_severity: Severity
     tactics: list[str]
+    techniques: list[str] = Field(default_factory=list)
     products: list[str]
     users: list[str]
     hosts: list[str]
     assets: list[Asset]
     identities: list[Identity]
+    alert_facts: list[dict] = Field(default_factory=list)
     executive_summary: str
     narrative: str
     containment: list[str]

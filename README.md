@@ -43,7 +43,7 @@ engine/schemas.py                 Pydantic v2 models
 engine/normalizer.py              Vendor-field mapping, CMDB/IAM enrich, dedup
 engine/correlator.py              Entity + time union-find (no scenario_id)
 engine/risk_scorer.py             B × K × C risk + ablation attribution
-engine/explainer.py               Deterministic cards; optional LLM prose
+engine/explainer.py               Deterministic cards; optional OpenAI/Gemini prose
 engine/pipeline.py                End-to-end run + fatigue metrics
 app.py                            Interactive SOC queue
 tests/                            Dedup, correlation, scoring, acceptance
@@ -101,9 +101,35 @@ Volume has strongly diminishing returns. 120 identical Critical alerts are not 1
 
 Given the same dataset and `config.py`, ranking, scores, and attribution percentages are identical every run.
 
+## Explainability
+
+Every card answers six questions from incident facts only:
+
+| Question | Field |
+| --- | --- |
+| What happened? | `executive_summary` |
+| Why is it ranked here? | `why_prioritized` (ablation percents) |
+| Why did the legacy SIEM get it wrong? | `contrastive_explanation` |
+| Why might this be real rather than noise? | `why_not_false_positive` |
+| How did the attack evolve? | `attack_timeline` |
+| What should the SOC do now? | `recommended_actions` |
+
+Each timeline line cites a real alert ID, for example `[ALRT-A-001] 02:10 UTC — Anomalous VPN login for usr_svc_deploy on prd-app-02.` The explainer never invents alert IDs, hosts, users, techniques, IPs, or timestamps. False-positive wording stays uncertain (`unlikely to be isolated noise`), never `definitely malicious`.
+
 ## LLM contract
 
-Disabled by default (`LLM_ENABLED = False`). When enabled, the model may rewrite the executive summary, narrative, and containment text. It must not change risk scores, invent entities or alert IDs, alter ranking, add unsupported ATT&CK stages, or override attribution.
+Offline by default. Optional providers are selected by environment variables:
+
+```bash
+LLM_PROVIDER=openai
+OPENAI_API_KEY=...
+
+# or
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=...
+```
+
+The model receives only a structured incident payload (IDs, timestamps, entities, CMDB/IAM, ATT&CK, edges, score, attribution, naive rank, AI rank). It must not invent facts, change `risk_score` / ranks, or rewrite attribution percents. Every returned timeline step is checked for a real `[alert_id]`. If no key is set or the call fails, the deterministic Python card is used unchanged.
 
 ## Mandatory scenarios
 

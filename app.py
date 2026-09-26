@@ -336,6 +336,7 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
     )
 
     with overview:
+        st.markdown("**What happened?**")
         st.write(card.executive_summary)
         e1, e2, e3 = st.columns(3)
         with e1:
@@ -362,16 +363,20 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
             st.write(", ".join(card.products) or "—")
             st.markdown("**Class**")
             st.write(classify(item))
-        if card.contrastive and item.naive_siem_rank and item.naive_siem_rank <= 3:
-            st.caption(
-                "SIEM would surface this on volume/severity. Confirm business impact before paging."
-            )
-        elif card.contrastive and (card.risk_rank or 99) <= 2:
-            st.caption(card.contrastive)
+        if card.contrastive_explanation or card.contrastive:
+            st.markdown("**Why the legacy SIEM got this wrong**")
+            st.write(card.contrastive_explanation or card.contrastive)
+        if card.why_not_false_positive:
+            st.markdown("**Why this may be real rather than noise**")
+            st.write(card.why_not_false_positive)
 
     with timeline:
+        st.markdown("**How the attack evolved**")
+        for line in card.attack_timeline:
+            st.write(line)
         rows = [
             {
+                "Alert": alert.alert_id,
                 "Start": fmt_ts(alert.first_seen or alert.timestamp),
                 "End": fmt_ts(alert.last_seen or alert.timestamp),
                 "Sensor": alert.source_product,
@@ -398,7 +403,7 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
         with left:
             st.plotly_chart(driver_chart(card), width="stretch")
         with right:
-            st.markdown("**Why this priority**")
+            st.markdown("**Why is it ranked here?**")
             for driver in card.why_prioritized or card.risk.drivers:
                 st.write(f"**{driver.factor}** · {driver.contribution_pct}%")
                 if driver.evidence:
@@ -411,7 +416,7 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
         )
 
     with response:
-        st.markdown("**Recommended containment**")
+        st.markdown("**What should the SOC do now?**")
         for action in card.containment:
             checked = action in record["done"]
             if st.checkbox(action, value=checked, key=f"act-{item.incident.incident_id}-{hash(action)}"):
