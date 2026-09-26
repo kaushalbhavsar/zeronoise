@@ -1,12 +1,17 @@
 """Normalize vendor-shaped alerts and enrich them from CMDB / IAM.
 
-Deduplication collapses repetitive bursts. scenario_id is preserved on the
-record for demo validation only and is never consulted here for grouping.
+A single malformed row or an unknown asset/user must not fail the
+pipeline. Unknown context is recorded on the alert and later scored
+with neutral weights. scenario_id is preserved for demo validation
+only and is never consulted for grouping.
 """
 
 from __future__ import annotations
 
+import ipaddress
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterable
 
 from dateutil.parser import isoparse
@@ -32,6 +37,9 @@ PRODUCT_ALIASES: dict[str, str] = {
     "splunk": "SIEM",
     "siem": "SIEM",
     "qradar": "SIEM",
+    "ids": "SIEM",
+    "snort": "SIEM",
+    "suricata": "SIEM",
 }
 
 TACTIC_ALIASES: dict[str, str] = {
@@ -68,13 +76,52 @@ SEVERITY_ALIASES: dict[str, str] = {
 }
 
 
+def parse_jsonl(source: Path | Iterable[str]) -> tuple[list[dict], list[str]]:
+    """Parse JSONL, skipping blank and malformed lines."""
+    rows: list[dict] = []
+    errors: list[str] = []
+    if isinstance(source, Path):
+        lines = source.read_text(encoding="utf-8").splitlines()
+    else:
+        lines = list(source)
+    for idx, line in enumerate(lines, start=1):
+        text = line.strip()
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            errors.append(f"line {idx}: invalid JSON ({exc.msg})")
+            continue
+        if not isinstance(payload, dict):
+            errors.append(f"line {idx}: expected an object, got {type(payload).__name__}")
+            continue
+        rows.append(payload)
+    return rows, errors
+
+
+def normalize_ip(value: object | None) -> str | None:
+    """Strip, parse, and canonicalize an IPv4/IPv6 address."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if "/" in text:
+        text = text.split("/", 1)[0].strip()
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return text
+
+
 def _as_dt(value: datetime | str | None) -> datetime:
     if value is None:
         raise ValueError("alert is missing a timestamp")
     if isinstance(value, datetime):
         dt = value
     else:
-        dt = isoparse(str(value))
+        dt = isoparse(str(value).strip())
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
@@ -137,14 +184,16 @@ def normalize_raw(raw: dict | RawAlert) -> EnrichedAlert:
         entities = AlertEntities.model_validate(entities)
     if entities is None:
         entities = AlertEntities()
+    host_id = _pick(entities.host_id, payload.host_id)
+    user_id = _pick(entities.user_id, payload.user_id)
     entities = AlertEntities(
-        user_id=_pick(entities.user_id, payload.user_id),
-        host_id=_pick(entities.host_id, payload.host_id),
-        src_ip=_pick(entities.src_ip, payload.src_ip),
-        dest_ip=_pick(entities.dest_ip, payload.dest_ip),
+        user_id=str(user_id).strip() if user_id else None,
+        host_id=str(host_id).strip() if host_id else None,
+        src_ip=normalize_ip(_pick(entities.src_ip, payload.src_ip)),
+        dest_ip=normalize_ip(_pick(entities.dest_ip, payload.dest_ip)),
         process_hash=_pick(entities.process_hash, payload.process_hash),
     )
-    alert_id = str(_pick(payload.alert_id, payload.id) or "")
+    alert_id = str(_pick(payload.alert_id, payload.id) or "").strip()
     if not alert_id:
         raise ValueError("alert is missing an id")
     rule = str(_pick(payload.rule_name, payload.signature) or "").strip()
@@ -155,6 +204,7 @@ def normalize_raw(raw: dict | RawAlert) -> EnrichedAlert:
         raise ValueError(f"{alert_id}: missing MITRE technique")
     return EnrichedAlert(
         alert_id=alert_id,
+        original_alert_id=alert_id,
         timestamp=_as_dt(_pick(payload.timestamp, payload.time)),
         source_product=_product(_pick(payload.source_product, payload.product, payload.vendor)),
         rule_name=rule,
@@ -173,12 +223,15 @@ def normalize_raw(raw: dict | RawAlert) -> EnrichedAlert:
 class ContextIndex:
     def __init__(self, assets: Iterable[Asset], identities: Iterable[Identity]) -> None:
         self.by_host = {asset.host_id: asset for asset in assets}
+        self.by_hostname = {asset.hostname: asset for asset in self.by_host.values()}
         self.by_ip = {asset.ip_address: asset for asset in self.by_host.values()}
         self.by_user = {identity.user_id: identity for identity in identities}
 
     def resolve_asset(self, host_id: str | None, ip: str | None) -> Asset | None:
         if host_id and host_id in self.by_host:
             return self.by_host[host_id]
+        if host_id and host_id in self.by_hostname:
+            return self.by_hostname[host_id]
         if ip and ip in self.by_ip:
             return self.by_ip[ip]
         return None
@@ -189,11 +242,35 @@ class ContextIndex:
         if dest_asset and asset is None:
             asset = dest_asset
         identity = self.by_user.get(alert.entities.user_id or "")
-        updates: dict = {"asset": asset, "dest_asset": dest_asset, "identity": identity}
-        # Entity resolution: promote CMDB host_id onto the alert so later
-        # correlation joins IP-only and host-id observations of the same asset.
-        if asset and not alert.entities.host_id:
-            updates["entities"] = alert.entities.model_copy(update={"host_id": asset.host_id})
+        entities = alert.entities
+        # Resolve host IP ↔ host ID so later correlation joins both forms.
+        updates: dict = {}
+        if asset and not entities.host_id:
+            entities = entities.model_copy(update={"host_id": asset.host_id})
+        if asset and entities.src_ip and entities.src_ip == asset.ip_address:
+            pass
+        if dest_asset and not entities.dest_ip:
+            entities = entities.model_copy(update={"dest_ip": dest_asset.ip_address})
+        gaps: list[str] = []
+        if entities.user_id and identity is None:
+            gaps.append(f"unknown_user:{entities.user_id}")
+        if entities.host_id and asset is None:
+            gaps.append(f"unknown_host:{entities.host_id}")
+        if entities.src_ip and asset is None and dest_asset is None:
+            if entities.src_ip not in self.by_ip:
+                gaps.append(f"unknown_src_ip:{entities.src_ip}")
+        if entities.dest_ip and dest_asset is None and entities.dest_ip not in self.by_ip:
+            gaps.append(f"unknown_dest_ip:{entities.dest_ip}")
+        updates.update(
+            {
+                "entities": entities,
+                "asset": asset,
+                "dest_asset": dest_asset,
+                "identity": identity,
+                "context_gaps": gaps,
+                "original_alert_id": alert.original_alert_id or alert.alert_id,
+            }
+        )
         return alert.model_copy(update=updates)
 
 
@@ -223,12 +300,7 @@ def deduplicate_alerts(
     alerts: Iterable[EnrichedAlert],
     window_minutes: int = DEDUP_WINDOW_MINUTES,
 ) -> list[EnrichedAlert]:
-    """Collapse same-rule, same-entity bursts inside the dedup window.
-
-    The surviving alert keeps the earliest timestamp, the maximum confidence,
-    the mean false-positive rate, and a summed event_count. Member IDs are
-    retained for analyst traceability.
-    """
+    """Collapse same-rule, same-entity bursts inside the dedup window."""
     ordered = sorted(alerts, key=lambda a: (a.timestamp, a.alert_id))
     buckets: dict[tuple[str, ...], list[EnrichedAlert]] = {}
     for alert in ordered:
@@ -272,6 +344,15 @@ def normalize_and_enrich(
     assets: Iterable[Asset] | Iterable[dict],
     identities: Iterable[Identity] | Iterable[dict],
 ) -> list[EnrichedAlert]:
+    enriched, _errors = normalize_and_enrich_report(raw_alerts, assets, identities)
+    return enriched
+
+
+def normalize_and_enrich_report(
+    raw_alerts: Iterable[dict],
+    assets: Iterable[Asset] | Iterable[dict],
+    identities: Iterable[Identity] | Iterable[dict],
+) -> tuple[list[EnrichedAlert], list[str]]:
     parsed_assets = [
         asset if isinstance(asset, Asset) else Asset.model_validate(asset) for asset in assets
     ]
@@ -279,5 +360,14 @@ def normalize_and_enrich(
         ident if isinstance(ident, Identity) else Identity.model_validate(ident)
         for ident in identities
     ]
-    normalized = [normalize_raw(raw) for raw in raw_alerts]
-    return enrich_alerts(normalized, parsed_assets, parsed_identities)
+    normalized: list[EnrichedAlert] = []
+    errors: list[str] = []
+    for idx, raw in enumerate(raw_alerts, start=1):
+        try:
+            normalized.append(normalize_raw(raw))
+        except Exception as exc:  # noqa: BLE001 - isolate a single bad row
+            ident = ""
+            if isinstance(raw, dict):
+                ident = str(raw.get("id") or raw.get("alert_id") or f"row {idx}")
+            errors.append(f"{ident or f'row {idx}'}: {exc}")
+    return enrich_alerts(normalized, parsed_assets, parsed_identities), errors

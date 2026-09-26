@@ -8,7 +8,7 @@ from pathlib import Path
 from config import ALERTS_PATH, CMDB_PATH, IAM_PATH
 from engine.correlator import correlate_alerts
 from engine.explainer import explain_incidents
-from engine.normalizer import deduplicate_alerts, normalize_and_enrich
+from engine.normalizer import deduplicate_alerts, normalize_and_enrich_report, parse_jsonl
 from engine.risk_scorer import score_incidents
 from engine.schemas import (
     Asset,
@@ -24,14 +24,8 @@ def load_json(path: Path) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def load_jsonl(path: Path) -> list[dict]:
-    rows: list[dict] = []
-    with path.open(encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+def load_jsonl(path: Path) -> tuple[list[dict], list[str]]:
+    return parse_jsonl(path)
 
 
 def _scenario_ids(alerts: list[EnrichedAlert]) -> set[str]:
@@ -69,10 +63,12 @@ def compute_metrics(
                 return idx
         return None
 
-    breach_risk = rank_of(risk_ranked, "true_breach")
-    breach_legacy = rank_of(legacy_ranked, "true_breach")
-    scan_risk = rank_of(risk_ranked, "noisy_scanner")
-    scan_legacy = rank_of(legacy_ranked, "noisy_scanner")
+    breach_risk = rank_of(risk_ranked, "quiet_crown_jewel")
+    breach_legacy = rank_of(legacy_ranked, "quiet_crown_jewel")
+    ransom_risk = rank_of(risk_ranked, "ransomware_staging")
+    ransom_legacy = rank_of(legacy_ranked, "ransomware_staging")
+    scan_risk = rank_of(risk_ranked, "noisy_false_priority")
+    scan_legacy = rank_of(legacy_ranked, "noisy_false_priority")
     inverted = bool(
         breach_risk
         and scan_risk
@@ -81,6 +77,7 @@ def compute_metrics(
         and breach_risk < scan_risk
         and scan_legacy < breach_legacy
     )
+    missing_context = sum(1 for alert in deduped if alert.context_gaps)
     return PipelineMetrics(
         raw_alert_count=raw_count,
         enriched_alert_count=enriched_count,
@@ -89,10 +86,13 @@ def compute_metrics(
         alerts_collapsed_by_dedup=collapsed,
         fatigue_reduction_pct=round(fatigue, 2),
         volume_compression_pct=round(compression, 2),
-        true_breach_risk_rank=breach_risk,
-        true_breach_legacy_rank=breach_legacy,
-        noisy_scanner_risk_rank=scan_risk,
-        noisy_scanner_legacy_rank=scan_legacy,
+        quiet_crown_jewel_risk_rank=breach_risk,
+        quiet_crown_jewel_legacy_rank=breach_legacy,
+        ransomware_staging_risk_rank=ransom_risk,
+        ransomware_staging_legacy_rank=ransom_legacy,
+        noisy_false_priority_risk_rank=scan_risk,
+        noisy_false_priority_legacy_rank=scan_legacy,
+        missing_context_alert_count=missing_context,
         ranking_inverted=inverted,
     )
 
@@ -107,11 +107,18 @@ def run_pipeline(
     iam_path: Path = IAM_PATH,
     use_llm: bool = False,
 ) -> PipelineResult:
-    raw_alerts = alerts if alerts is not None else load_jsonl(alerts_path)
+    parse_errors: list[str] = []
+    if alerts is not None:
+        raw_alerts = list(alerts)
+    else:
+        raw_alerts, parse_errors = load_jsonl(alerts_path)
     raw_assets = assets if assets is not None else load_json(cmdb_path)
     raw_identities = identities if identities is not None else load_json(iam_path)
 
-    enriched = normalize_and_enrich(raw_alerts, raw_assets, raw_identities)
+    enriched, normalize_errors = normalize_and_enrich_report(
+        raw_alerts, raw_assets, raw_identities
+    )
+    all_errors = parse_errors + normalize_errors
     deduped = deduplicate_alerts(enriched)
     incidents = correlate_alerts(deduped)
     scored = score_incidents(incidents)
@@ -129,8 +136,8 @@ def run_pipeline(
         item.incident.incident_id: idx for idx, item in enumerate(legacy_ranked, start=1)
     }
 
-    scanner = _find_by_scenario(scored, "noisy_scanner")
-    breach = _find_by_scenario(scored, "true_breach")
+    scanner = _find_by_scenario(scored, "noisy_false_priority")
+    breach = _find_by_scenario(scored, "quiet_crown_jewel")
     cards = explain_incidents(
         risk_ranked,
         risk_ranks=risk_ranks,
@@ -140,14 +147,16 @@ def run_pipeline(
         use_llm=use_llm,
     )
     metrics = compute_metrics(
-        raw_count=len(raw_alerts),
+        raw_count=len(raw_alerts) + len(parse_errors),
         enriched_count=len(enriched),
         deduped=deduped,
         risk_ranked=risk_ranked,
         legacy_ranked=legacy_ranked,
     )
+    metrics.dropped_alert_count = len(all_errors)
     return PipelineResult(
-        alerts_raw=len(raw_alerts),
+        alerts_raw=len(raw_alerts) + len(parse_errors),
+        normalize_errors=all_errors,
         alerts_deduped=deduped,
         incidents=scored,
         cards=cards,

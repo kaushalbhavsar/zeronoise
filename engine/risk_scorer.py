@@ -20,6 +20,8 @@ from config import (
     ENV_SCORE,
     KILL_CHAIN,
     LATE_STAGE_SCORE,
+    NEUTRAL_IMPACT,
+    NEUTRAL_PRIVILEGE,
     NOISE_DISCOUNT_CAP,
     PRIVILEGE_SCORE,
     RISK_WEIGHTS,
@@ -66,7 +68,19 @@ def _identities_for(incident: CandidateIncident) -> list[Identity]:
 def score_business_impact(incident: CandidateIncident) -> tuple[float, list[str]]:
     assets = _assets_for(incident)
     if not assets:
-        return 0.30, ["No CMDB match; defaulting to modest internal impact."]
+        unresolved = sorted(
+            {
+                alert.entities.host_id
+                for alert in incident.alerts
+                if alert.entities.host_id
+            }
+        )
+        note = (
+            f"Unresolved host(s) {', '.join(unresolved)}; applying neutral impact {NEUTRAL_IMPACT:.2f}."
+            if unresolved
+            else f"No CMDB match; applying neutral impact {NEUTRAL_IMPACT:.2f}."
+        )
+        return NEUTRAL_IMPACT, [note]
     best = 0.0
     evidence: list[str] = []
     for asset in assets:
@@ -89,7 +103,18 @@ def score_business_impact(incident: CandidateIncident) -> tuple[float, list[str]
 def score_privilege(incident: CandidateIncident) -> tuple[float, list[str]]:
     identities = _identities_for(incident)
     if not identities:
-        return 0.0, ["No IAM identity attached to this incident."]
+        claimed = sorted(
+            {
+                alert.entities.user_id
+                for alert in incident.alerts
+                if alert.entities.user_id
+            }
+        )
+        if claimed:
+            return NEUTRAL_PRIVILEGE, [
+                f"IAM miss for {', '.join(claimed)}; applying neutral privilege {NEUTRAL_PRIVILEGE:.2f}."
+            ]
+        return 0.0, ["No identity observed on this incident."]
     best = 0.0
     evidence: list[str] = []
     for identity in identities:
@@ -205,7 +230,14 @@ def _title(incident: CandidateIncident) -> str:
             what = f"{incident.unique_tactics[0]} → {incident.unique_tactics[-1]}"
     else:
         what = incident.alerts[0].rule_name
-    who = identities[0].user_id if identities else "no identity"
+    if identities:
+        who = max(
+            identities, key=lambda ident: PRIVILEGE_SCORE[ident.privilege_tier]
+        ).user_id
+    elif incident.unique_users:
+        who = incident.unique_users[0]
+    else:
+        who = "no identity"
     return f"{what} on {where} involving {who}"
 
 

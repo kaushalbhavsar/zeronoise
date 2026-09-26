@@ -8,12 +8,14 @@ The core is deterministic and works fully offline. An LLM, if you turn it on, ma
 
 ## What it proves
 
-On the seeded demo dataset (`RANDOM_SEED = 42`):
+On the seeded demo dataset (`RANDOM_SEED = 42`, ~300 alerts over 24 hours):
 
-| Queue | Rank 1 | Rank of the true breach |
-| --- | --- | --- |
-| Legacy SIEM (severity × volume) | Noisy sandbox scanner | Buried |
-| Risk-based incidents | Stealthy crown-jewel breach | **#1** |
+| Queue | Rank 1 | Quiet crown-jewel (4 Medium alerts) | Ransomware staging |
+| --- | --- | --- | --- |
+| Legacy SIEM (severity × volume) | 120 Critical WAF/IDS hits on `dev-sandbox-04` | Buried | Mid-pack |
+| Risk-based incidents | `prd-billing-db-01` exfil via `usr_admin_root` | **#1** | **#2** |
+
+The sandbox cluster is not hard-coded to a low risk rank. High FPR, sandbox/public/crit-1 context, and no kill-chain progression suppress it naturally.
 
 Alert fatigue drops because hundreds of raw alerts collapse into a short incident queue, and the item at the top is the one that actually matters.
 
@@ -90,6 +92,17 @@ Given the same dataset and `config.py`, ranking, scores, and attribution percent
 
 Disabled by default (`LLM_ENABLED = False`). When enabled, the model may rewrite the executive summary, narrative, and containment text. It must not change risk scores, invent entities or alert IDs, alter ranking, add unsupported ATT&CK stages, or override attribution.
 
+## Mandatory scenarios
+
+| ID | Story | Alerts | Expected rank |
+| --- | --- | --- | --- |
+| A `quiet_crown_jewel` | VPN → PowerShell creds → SSH pivot → 2.4 GB exfil on `prd-billing-db-01` | 4 Medium / ~90 min | Risk **#1**, legacy buried |
+| B `ransomware_staging` | Phish → exec → LSASS → discovery → SMB scan → shadow-copy delete on `wrk-corp-14` | 6 Medium/High | Risk **#2** |
+| C `noisy_false_priority` | CVE-2024-21762 WAF/IDS flood on `dev-sandbox-04` | 120 Critical | Legacy **#1**, risk deprioritized by the formula |
+| Background | Failed logins, vuln scans, isolated malware, admin scripts, WAF probes, brute-force bursts | 170 | Must not weld into a giant incident |
+
+The normalizer parses JSONL, canonicalizes timestamps and IPs, resolves host IP ↔ host ID, enriches from CMDB/IAM, and keeps going when a row is malformed or an asset/user is unknown (neutral context weights).
+
 ## Design constraints
 
 - Dedup key: rule + user + host + src IP + dest IP inside a 15-minute window.
@@ -103,4 +116,4 @@ Disabled by default (`LLM_ENABLED = False`). When enabled, the model may rewrite
 pytest tests/test_deduplication.py tests/test_correlation.py tests/test_risk_scoring.py tests/test_acceptance.py -q
 ```
 
-Acceptance checks the ranking inversion, ≥80% fatigue reduction, determinism under seed 42, and that scrambling `scenario_id` does not change clusters or scores.
+Acceptance checks risk #1 / #2 for scenarios A and B, legacy #1 for C, measurable fatigue reduction, isolated background noise, determinism under seed 42, unused `scenario_id`, and that a malformed row does not fail the pipeline.

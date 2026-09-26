@@ -72,10 +72,12 @@ class EnrichedAlert(BaseModel):
     entities: AlertEntities
     event_count: int = 1
     scenario_id: str | None = None
+    original_alert_id: str | None = None
     member_alert_ids: list[str] = Field(default_factory=list)
     asset: Asset | None = None
     dest_asset: Asset | None = None
     identity: Identity | None = None
+    context_gaps: list[str] = Field(default_factory=list)
 
 
 class RawAlert(BaseModel):
@@ -186,15 +188,20 @@ class PipelineMetrics(BaseModel):
     alerts_collapsed_by_dedup: int
     fatigue_reduction_pct: float
     volume_compression_pct: float
-    true_breach_risk_rank: int | None = None
-    true_breach_legacy_rank: int | None = None
-    noisy_scanner_risk_rank: int | None = None
-    noisy_scanner_legacy_rank: int | None = None
+    quiet_crown_jewel_risk_rank: int | None = None
+    quiet_crown_jewel_legacy_rank: int | None = None
+    ransomware_staging_risk_rank: int | None = None
+    ransomware_staging_legacy_rank: int | None = None
+    noisy_false_priority_risk_rank: int | None = None
+    noisy_false_priority_legacy_rank: int | None = None
+    dropped_alert_count: int = 0
+    missing_context_alert_count: int = 0
     ranking_inverted: bool = False
 
 
 class PipelineResult(BaseModel):
     alerts_raw: int
+    normalize_errors: list[str] = Field(default_factory=list)
     alerts_deduped: list[EnrichedAlert]
     incidents: list[ScoredIncident]
     cards: list[IncidentCard]
