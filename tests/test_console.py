@@ -1,6 +1,8 @@
-from engine.presentation import METRIC_DEFINITIONS
-from console.common import apply_preset, filter_summary, priority
+from console.common import apply_preset, filter_summary, human_title, priority
 from console.state import OPEN_STATUSES, PRIORITIES
+from engine.presentation import METRIC_DEFINITIONS
+from engine.risk_scorer import score_incident
+from tests.test_risk_scoring import _breach_incident, _scanner_incident
 
 
 def test_priority_bands() -> None:
@@ -39,3 +41,10 @@ def test_metric_definitions_state_scope_and_window() -> None:
         assert "Calculation" in text or "Calculation" in text
     assert "not the current queue filter" in METRIC_DEFINITIONS["open"]
     assert "Current queue filters only" in METRIC_DEFINITIONS["matching"]
+
+
+def test_human_title_names_the_attack() -> None:
+    breach = score_incident(_breach_incident())
+    scanner = score_incident(_scanner_incident())
+    assert human_title(breach) == "Crown-jewel exfil on pci-db-01"
+    assert human_title(scanner) == "Noisy scanner on sandbox-web-07"

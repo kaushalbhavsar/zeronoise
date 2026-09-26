@@ -42,12 +42,15 @@ def test_overview_is_default_workspace() -> None:
 
 def test_queue_mode_does_not_raise() -> None:
     at = _queue()
-    assert any("Open case" in button.label for button in at.button)
-    assert not any("Back to queue" in button.label for button in at.button)
+    labels = [button.label for button in at.button]
+    assert any("Open case" in label for label in labels)
+    assert "Open selected case" in labels
+    assert not any("Back to queue" in label for label in labels)
     blob = " ".join(str(item.value) for item in at.markdown)
     assert "Take next" in blob
     assert "Working queue" in blob
     assert "zn-heading" in blob
+    assert at.session_state.active_case_id in (None, "")
 
 
 def test_opening_case_replaces_queue_with_workspace() -> None:
@@ -173,6 +176,8 @@ def test_investigate_records_session_history() -> None:
     assert history[0]["actor"] == "You"
     assert history[0]["field"] in {"status", "owner"}
     assert at.session_state.cases[case_id]["status"] == "Investigating"
+    assert at.session_state.last_notice
+    assert "Investigating" in at.session_state.last_notice
 
 
 def test_intelligence_uses_volume_not_fatigue_copy() -> None:

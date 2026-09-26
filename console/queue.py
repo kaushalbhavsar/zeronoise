@@ -13,6 +13,8 @@ from console.common import (
     empty_state,
     filter_summary,
     fmt_age,
+    heading,
+    human_title,
     owner_of,
     page_header,
     primary_asset,
@@ -21,7 +23,6 @@ from console.common import (
     queue_metrics,
     render_load_error,
     render_priority_card,
-    section,
     session_chrome,
     status_of,
     visible_incidents,
@@ -51,16 +52,17 @@ def _frozen_featured(items: list[ScoredIncident], signature: tuple) -> list[Scor
     return frozen or _featured(items)
 
 
-def render_featured_cards(items: list[ScoredIncident], now: datetime, signature: tuple) -> None:
+def render_featured_cards(items: list[ScoredIncident], now: datetime, signature: tuple) -> list[ScoredIncident]:
     top = _frozen_featured(items, signature)
     if not top:
-        return
-    section("Take next", "Action")
+        return []
+    heading("Take next")
     cols = st.columns(len(top), gap="medium")
     mode = st.session_state.get("queue_mode", "ai")
     for col, item in zip(cols, top):
         with col:
             render_priority_card(item, now, key_prefix=f"feat-{mode}")
+    return top
 
 
 def queue_rows(items: list[ScoredIncident], now: datetime, *, show_ranks: bool) -> list[dict]:
@@ -70,12 +72,11 @@ def queue_rows(items: list[ScoredIncident], now: datetime, *, show_ranks: bool) 
         row = {
             "_id": item.incident.incident_id,
             "Priority": priority(item.risk.risk_score),
-            "Incident": display(item.title, item),
+            "Incident": display(human_title(item), item),
             "Affected service/asset": display(primary_asset(item), item),
             "Status": status_of(item),
             "Owner": owner_of(item),
-            "Age": fmt_age(item.incident.first_seen, now),
-            "Risk": round(item.risk.risk_score, 1),
+            "Age / Risk": f"{fmt_age(item.incident.first_seen, now)} · {item.risk.risk_score:.0f}",
         }
         if show_ranks:
             row["AI rank"] = item.risk_rank or "—"
@@ -85,9 +86,18 @@ def queue_rows(items: list[ScoredIncident], now: datetime, *, show_ranks: bool) 
     return rows
 
 
-def render_queue_table(items: list[ScoredIncident], now: datetime, *, show_ranks: bool) -> None:
+def render_queue_table(
+    items: list[ScoredIncident],
+    now: datetime,
+    *,
+    show_ranks: bool,
+    has_featured: bool = False,
+) -> None:
     if not items:
-        empty_state("no_matches", action="Clear search or choose All open to see the organization-wide queue.")
+        if has_featured:
+            st.caption("Matching high-priority cases are on the cards above.")
+        else:
+            empty_state("no_matches", action="Clear search or choose All open to see the organization-wide queue.")
         return
     frame = queue_rows(items, now, show_ranks=show_ranks)
     order = [
@@ -96,8 +106,7 @@ def render_queue_table(items: list[ScoredIncident], now: datetime, *, show_ranks
         "Affected service/asset",
         "Status",
         "Owner",
-        "Age",
-        "Risk",
+        "Age / Risk",
     ]
     if show_ranks:
         order.extend(["AI rank", "Legacy rank", "Rank delta"])
@@ -116,28 +125,29 @@ def render_queue_table(items: list[ScoredIncident], now: datetime, *, show_ranks
                 help="P0 ≥ 85 · P1 ≥ 70 · P2 ≥ 50 · P3 ≥ 30 · P4 below. Not vendor severity.",
             ),
             "Incident": st.column_config.TextColumn("Incident", width="large"),
-            "Age": st.column_config.TextColumn(
-                "Age",
-                help="Time since first_seen. No SLA deadline is recorded in this snapshot.",
+            "Age / Risk": st.column_config.TextColumn(
+                "Age / Risk",
+                help="Age is time since first_seen. Risk is 0–100, not vendor severity or confidence. No SLA is recorded.",
             ),
-            "Risk": st.column_config.NumberColumn(
-                "Risk",
-                help="Incident risk score 0–100. Not vendor severity and not a confidence percentage.",
-            ),
-            "_id": st.column_config.TextColumn("_id", width="small"),
+            "_id": None,
         },
     )
     selected_rows = event.selection.rows if event and event.selection else []
-    if not selected_rows:
-        return
-    incident_id = str(frame[selected_rows[0]]["_id"])
+    incident_id = str(frame[selected_rows[0]]["_id"]) if selected_rows else None
     if st.session_state.pop("ignore_queue_pick", False):
+        incident_id = None
+    if incident_id:
         st.session_state.queue_table_pick = incident_id
-        return
-    if st.session_state.get("queue_table_pick") == incident_id:
-        return
-    st.session_state.queue_table_pick = incident_id
-    open_case_view(incident_id)
+        st.session_state.selected = incident_id
+    open_col, hint = st.columns([1, 2.4])
+    with open_col:
+        if st.button("Open selected case", disabled=not incident_id, key="open-selected-case"):
+            open_case_view(incident_id)
+    with hint:
+        if incident_id:
+            st.caption(f"Selected {display(incident_id)}")
+        else:
+            st.caption("Select a row, then open it. Featured cases stay on the cards above.")
 
 
 def render_incident_queue(result: PipelineResult, visible: list[ScoredIncident], now: datetime, filters: dict) -> None:
@@ -167,8 +177,6 @@ def render_incident_queue(result: PipelineResult, visible: list[ScoredIncident],
             filters["env_filter"],
             str(filters["preset"]),
         )
-        + " · Open / P0–P1 / unacked / assigned are organization-wide. Matching filters is the current view. "
-        "Queue order stays on the selected ranking until you change it. Age is time since first seen; no SLA exists."
     )
     signature = (
         str(filters["preset"]),
@@ -181,11 +189,16 @@ def render_incident_queue(result: PipelineResult, visible: list[ScoredIncident],
         bool(filters["unassigned_critical"]),
         bool(filters["production_only"]),
     )
-    render_featured_cards(visible, now, signature)
-    section("Working queue", "Observed")
-    render_queue_table(visible, now, show_ranks=bool(filters["show_ranks"]))
-    if not filters["show_ranks"]:
-        st.caption("AI rank, legacy rank, and rank delta live under Detection intelligence, or enable them in More filters.")
+    featured = render_featured_cards(visible, now, signature)
+    featured_ids = {item.incident.incident_id for item in featured}
+    table_items = [item for item in visible if item.incident.incident_id not in featured_ids]
+    heading("Working queue")
+    render_queue_table(
+        table_items,
+        now,
+        show_ranks=bool(filters["show_ranks"]),
+        has_featured=bool(featured),
+    )
 
 
 def render() -> None:

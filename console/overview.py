@@ -5,22 +5,16 @@ from __future__ import annotations
 import streamlit as st
 
 from console.common import (
-    classify,
     defined_metric,
-    display,
     empty_state,
-    env_of,
-    fmt_age,
+    heading,
     owner_of,
     page_header,
-    primary_asset,
     priority,
     queue_metrics,
     render_load_error,
     render_priority_card,
-    section,
     session_chrome,
-    status_of,
 )
 from console.state import (
     OPEN_STATUSES,
@@ -116,15 +110,9 @@ def render() -> None:
         defined_metric("prod", "Open in production", metrics["prod"])
     with c4:
         defined_metric("unacked", "Unacknowledged", metrics["unacked"])
-    st.caption(
-        f"{review_reduction_label(raw_n, inc_n)}: {raw_n} raw alerts collapsed to {inc_n} incidents. "
-        "That is a volume count, not measured time saved. "
-        "These four metrics are organization-wide, not queue-filtered."
-    )
-    with st.expander("Metric definitions"):
-        st.write("Each metric help text states scope, time window, and calculation. Hover a metric label for the same definition.")
+    st.caption(f"{review_reduction_label(raw_n, inc_n)} ({raw_n} → {inc_n}). Organization-wide.")
 
-    section("Highest-priority incidents", "Action")
+    heading("Highest-priority incidents")
     urgent = [
         item
         for item in result.risk_ranked
@@ -141,42 +129,14 @@ def render() -> None:
 
     left, right = st.columns([1.15, 0.85], gap="large")
     with left:
-        section("Affected services and assets", "Observed")
+        heading("Affected services and assets")
         rows = _affected_rows(result.risk_ranked)
         if rows:
             st.dataframe(rows, width="stretch", hide_index=True, key="ov-assets")
         else:
             empty_state("no_assets", action="Open the queue to inspect lower-priority cases.")
-        st.caption("Rows are observed CMDB assets on open high-priority incidents. No inferred dollar impact.")
     with right:
-        section("Response progress", "Session")
+        heading("Response progress")
         st.dataframe(_progress_rows(result), width="stretch", hide_index=True, key="ov-progress")
-        st.caption("Counts reflect local case state for this session. Closing a case here does not change the source snapshot.")
 
-    section("Open queue, risk order", "Observed")
-    preview = [
-        item
-        for item in result.risk_ranked
-        if case(item.incident.incident_id)["status"] in OPEN_STATUSES
-    ][:8]
-    if preview:
-        st.dataframe(
-            [
-                {
-                    "Priority": priority(item.risk.risk_score),
-                    "Incident": display(item.title, item),
-                    "Affected service/asset": display(primary_asset(item), item),
-                    "Status": status_of(item),
-                    "Owner": owner_of(item),
-                    "Age": fmt_age(item.incident.first_seen, now),
-                    "Risk": round(item.risk.risk_score, 1),
-                    "Class": classify(item),
-                    "Env": env_of(item),
-                }
-                for item in preview
-            ],
-            width="stretch",
-            hide_index=True,
-            key="ov-queue-preview",
-        )
     st.page_link(PAGE_QUEUE, label="Open the incident queue")

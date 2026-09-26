@@ -36,6 +36,7 @@ def test_case_markdown_matches_workspace_context() -> None:
         ],
     }
     text = case_markdown(item, card, record, now, mask=False)
+    assert "Crown-jewel exfil" in text or "exfil" in text.lower()
     assert item.title in text
     assert item.incident.incident_id in text
     assert "usr_admin_root" in text

@@ -52,6 +52,32 @@ def severity_token(severity: str) -> str:
     return SEVERITY_TOKEN.get(severity, "p4")
 
 
+def short_host(name: str) -> str:
+    if not name or name == "—":
+        return "unknown host"
+    return name.split(".")[0]
+
+
+def human_title(item: ScoredIncident) -> str:
+    """Short card title. Engine title stays available as secondary text."""
+    tactics = set(item.incident.unique_tactics)
+    badges = context_badges(item)
+    host = short_host(incident_roles(item)["affected_asset"])
+    if "Impact" in tactics:
+        label = "Ransomware staging"
+    elif "Exfiltration" in tactics and "Crown Jewel" in badges:
+        label = "Crown-jewel exfil"
+    elif "Exfiltration" in tactics:
+        label = "Data exfil"
+    elif "High FP Rule" in badges and "Sandbox" in badges:
+        label = "Noisy scanner"
+    elif "Lateral Movement" in tactics and "Credential Access" in tactics:
+        label = "Credential theft"
+    else:
+        label = classify(item)
+    return f"{label} on {host}"
+
+
 def classify(item: ScoredIncident) -> str:
     tactics = set(item.incident.unique_tactics)
     assets = [alert.asset for alert in item.incident.alerts if alert.asset]
@@ -135,15 +161,24 @@ def status_of(item: ScoredIncident) -> str:
     return case(item.incident.incident_id)["status"]
 
 
-def section(title: str, kind: str) -> None:
-    """Same kicker + heading used on every workspace and investigation tab."""
+def heading(title: str) -> None:
     st.markdown(
-        f"<div class='zn-section'>"
-        f"<div class='zn-kind'>{kind}</div>"
-        f"<div class='zn-heading'>{title}</div>"
-        f"</div>",
+        f"<div class='zn-section'><div class='zn-heading'>{title}</div></div>",
         unsafe_allow_html=True,
     )
+
+
+def section(title: str, kind: str | None = None) -> None:
+    if kind:
+        st.markdown(
+            f"<div class='zn-section'>"
+            f"<div class='zn-kind'>{kind}</div>"
+            f"<div class='zn-heading'>{title}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        return
+    heading(title)
 
 
 def extra_context(item: ScoredIncident) -> list[str]:
@@ -161,54 +196,62 @@ def render_priority_card(
     pri = priority(item.risk.risk_score)
     roles = incident_roles(item)
     active = "active" if item.incident.incident_id == st.session_state.get("selected") else ""
-    status_bit = f" · {owner_of(item)} · {status_of(item)}" if show_status else f" · {owner_of(item)}"
+    owner = owner_of(item)
     st.markdown(
         f"<div class='icard pri-{pri.lower()} {active}'>"
-        f"<div class='title'>{display(item.title, item)}</div>"
+        f"<div class='title'>{display(human_title(item), item)}</div>"
+        f"<div class='urgency'>{display(urgency_sentence(item), item)}</div>"
         f"<div class='meta'>"
         f"<span class='pri {pri.lower()}'>{pri}</span> "
-        f"Risk {item.risk.risk_score:.0f} · vendor {vendor_severity(item)} · "
-        f"{display(roles['affected_asset'], item)}{status_bit} · "
+        f"Risk {item.risk.risk_score:.0f} · {owner} · "
         f"{fmt_age(item.incident.first_seen, now)}"
+        f"{f' · {status_of(item)}' if show_status else ''}"
         f"</div>"
-        f"<div class='urgency'>{display(urgency_sentence(item), item)}</div>"
-        f"<div class='meta'>Source {display(roles['source_host'], item)} · "
-        f"Dest {display(roles['destination'], item)}</div>"
+        f"<div class='meta'>Source {display(short_host(roles['source_host']), item)} · "
+        f"Dest {display(short_host(roles['destination']), item)}</div>"
+        f"<div class='id'>{display(item.incident.incident_id, item)}</div>"
         f"</div>",
         unsafe_allow_html=True,
     )
-    copyable_id(display(item.incident.incident_id, item), key=f"{key_prefix}-id-{item.incident.incident_id}")
     render_badges(item, limit=3)
-    extra = extra_context(item)
-    if extra and not presenting():
-        with st.expander("More context"):
-            st.write(", ".join(extra))
     if st.button("Open case", key=f"{key_prefix}-{item.incident.incident_id}", use_container_width=True):
         open_case_view(item.incident.incident_id, switch=switch)
+
+
+def presentation_toggle() -> None:
+    st.toggle(
+        "Presentation mode",
+        key="presentation_mode",
+        help="Masks identifiers for screen sharing. Display only — not access control.",
+    )
+    if presenting():
+        st.caption("Masked · display only")
 
 
 def page_header(title: str, result: PipelineResult, *, lede: str) -> None:
     now = snapshot_now(result)
     first, last = snapshot_window(result)
     loaded = st.session_state.get("snapshot_loaded_at")
-    loaded_label = fmt_day(loaded) if loaded else fmt_day(now)
-    kicker = "ZeroNoise · presentation" if presenting() else "ZeroNoise · demo snapshot"
-    st.markdown(f"<div class='zn-kicker'>{kicker}</div>", unsafe_allow_html=True)
-    st.markdown(f"<div class='zn-title'>{title}</div>", unsafe_allow_html=True)
-    st.markdown(
-        f"<div class='zn-sub'>{lede} Reporting period {fmt_day(first)} → {fmt_day(last)}. "
-        f"Scope: offline JSONL + CMDB/IAM. Last observed event {fmt_day(last)}. "
-        f"Snapshot refreshed {loaded_label}. "
-        f"Freshness clock {fmt_day(now)} (12 minutes after last observed event). "
-        f"Historical / demo snapshot — not a live SIEM feed.</div>",
-        unsafe_allow_html=True,
-    )
-    if presenting():
-        st.info(
-            "Presentation mode is on. Identifiers are masked for screen sharing. "
-            "This is display-only and is not access control."
+    open_n = queue_metrics(result)["open"]
+    loaded_clock = loaded.astimezone(timezone.utc).strftime("%H:%M UTC") if loaded else now.strftime("%H:%M UTC")
+    day = first.astimezone(timezone.utc).strftime("%d %b %Y")
+    mode = "Presentation" if presenting() else "Demo snapshot"
+    title_col, chrome_col = st.columns([2.4, 0.9])
+    with title_col:
+        st.markdown(f"<div class='zn-kicker'>ZeroNoise · {mode}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='zn-title'>{title}</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='zn-sub'>{mode} · {day} · {open_n} open · refreshed {loaded_clock}</div>",
+            unsafe_allow_html=True,
         )
-    st.caption("Filters and case navigation use the cached snapshot; they do not rescore incidents.")
+    with chrome_col:
+        presentation_toggle()
+    with st.expander("Snapshot details"):
+        st.caption(
+            f"{lede} Period {fmt_day(first)} → {fmt_day(last)}. "
+            f"Offline JSONL + CMDB/IAM. Not a live SIEM feed. "
+            f"Last event {fmt_day(last)}. Clock is 12 minutes after that event."
+        )
 
 
 def render_badges(item: ScoredIncident, *, limit: int | None = 3) -> None:
@@ -223,7 +266,7 @@ def render_badges(item: ScoredIncident, *, limit: int | None = 3) -> None:
 
 
 def copyable_id(incident_id: str, *, key: str) -> None:
-    st.code(incident_id, language=None)
+    st.markdown(f"<div class='zn-id'>{incident_id}</div>", unsafe_allow_html=True)
 
 
 def visible_incidents(
@@ -263,6 +306,7 @@ def visible_incidents(
             [
                 item.incident.incident_id,
                 item.title,
+                human_title(item),
                 classify(item),
                 primary_user(item),
                 primary_asset(item),
@@ -384,11 +428,6 @@ def workspace_links() -> None:
 
 
 def session_chrome() -> None:
-    st.toggle(
-        "Presentation mode",
-        key="presentation_mode",
-        help="Masks identifiers and collapses technical controls for screen sharing. Not access control.",
-    )
     loaded = st.session_state.get("snapshot_loaded_at")
     if loaded:
         st.caption(f"Snapshot refreshed {fmt_day(loaded)}")
