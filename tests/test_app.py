@@ -14,14 +14,38 @@ def _app() -> AppTest:
     return at
 
 
-def test_queue_mode_does_not_raise() -> None:
+def _queue(at: AppTest | None = None) -> AppTest:
+    at = at or _app()
+    at.switch_page("console/pages/queue.py").run()
+    assert not at.exception
+    return at
+
+
+def _intel() -> AppTest:
     at = _app()
+    at.switch_page("console/pages/intelligence.py").run()
+    assert not at.exception
+    return at
+
+
+def test_overview_is_default_workspace() -> None:
+    at = _app()
+    titles = [item.value for item in at.title]
+    markdown = " ".join(str(item.value) for item in at.markdown)
+    assert any("Security overview" in str(value) for value in titles + [markdown])
+    assert "fewer items to review" in markdown.lower() or any(
+        "fewer items to review" in str(item.value).lower() for item in at.caption
+    )
+
+
+def test_queue_mode_does_not_raise() -> None:
+    at = _queue()
     assert any("Open case" in button.label for button in at.button)
     assert not any("Back to queue" in button.label for button in at.button)
 
 
 def test_opening_case_replaces_queue_with_workspace() -> None:
-    at = _app()
+    at = _queue()
     case_id = run_pipeline().risk_ranked[0].incident.incident_id
     at.session_state.active_case_id = case_id
     at.run()
@@ -38,10 +62,18 @@ def test_opening_case_replaces_queue_with_workspace() -> None:
         "Evidence",
     ]
     assert len(at.get("plotly_chart")) >= 1
+    blob = " ".join(str(item.value) for item in at.markdown)
+    blob += " ".join(str(item.value) for item in at.caption)
+    assert "What happened?" in blob
+    assert "Why this incident ranks higher" in blob or any(
+        "Why this incident ranks higher" in str(item.value) for item in at.markdown
+    )
+    assert "Destructive" not in blob
+    assert "Why the legacy SIEM got this wrong" not in blob
 
 
 def test_back_to_queue_preserves_filters() -> None:
-    at = _app()
+    at = _queue()
     at.session_state.queue_search = "wrk-corp"
     case_id = run_pipeline().risk_ranked[0].incident.incident_id
     at.session_state.active_case_id = case_id
@@ -55,9 +87,51 @@ def test_back_to_queue_preserves_filters() -> None:
 
 
 def test_open_case_helper_sets_active_id() -> None:
-    at = _app()
+    at = _queue()
     first = next(button for button in at.button if button.label == "Open case")
     first.click().run()
     assert not at.exception
     assert at.session_state.active_case_id
     assert any("Back to queue" in button.label for button in at.button)
+
+
+def test_notes_and_checklist_persist_across_rerun() -> None:
+    at = _queue()
+    case_id = run_pipeline().risk_ranked[0].incident.incident_id
+    at.session_state.active_case_id = case_id
+    at.run()
+    notes = at.text_area(key=f"notes-{case_id}")
+    notes.set_value("handoff: isolate after backup confirm").run()
+    assert at.session_state.cases[case_id]["notes"] == "handoff: isolate after backup confirm"
+    boxes = [box for box in at.checkbox if box.key and str(box.key).startswith(f"act-{case_id}-")]
+    assert boxes
+    boxes[0].check().run()
+    assert at.session_state.cases[case_id]["done"]
+    at.run()
+    assert at.session_state.cases[case_id]["notes"] == "handoff: isolate after backup confirm"
+    assert at.session_state.cases[case_id]["done"]
+
+
+def test_false_positive_close_requires_reason() -> None:
+    at = _queue()
+    case_id = run_pipeline().risk_ranked[0].incident.incident_id
+    at.session_state.active_case_id = case_id
+    at.run()
+    labels = [button.label for button in at.button]
+    assert "Close as false positive" in labels
+    assert "Destructive" not in " ".join(str(item.value) for item in at.markdown)
+    closer = next(button for button in at.button if button.label == "Close as false positive")
+    closer.click().run()
+    assert at.session_state.cases[case_id]["status"] == "New"
+    at.text_area(key=f"fp-reason-{case_id}").set_value("duplicate of sanctioned backup job").run()
+    closer = next(button for button in at.button if button.label == "Close as false positive")
+    closer.click().run()
+    assert at.session_state.cases[case_id]["status"] == "Closed — false positive"
+
+
+def test_intelligence_uses_volume_not_fatigue_copy() -> None:
+    at = _intel()
+    blob = " ".join(str(item.value) for item in list(at.markdown) + list(at.caption) + list(at.title))
+    assert "fewer items to review" in blob.lower()
+    assert "alert fatigue reduction" not in blob.lower()
+    assert "Why the legacy SIEM got this wrong" not in blob

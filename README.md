@@ -30,7 +30,7 @@ IAM identities  ─┘                                      │
                                                         │
                                               deterministic explainer
                                                         │
-                                         Streamlit SOC queue + contrast
+                                         Streamlit SOC workspaces
 ```
 
 `scenario_id` is written on synthetic alerts so the demo can be graded. The correlator and risk scorer never read it.
@@ -46,7 +46,8 @@ engine/risk_scorer.py             B × K × C risk + ablation attribution
 engine/explainer.py               Deterministic cards; optional OpenAI/Gemini prose
 engine/pipeline.py                load→…→score→rank→explain
 engine/presentation.py            Badges, rank delta, correlation sentences
-app.py                            SOC queue + investigation workbench
+console/                          Security overview, incident queue, detection intelligence
+app.py                            Streamlit navigation entrypoint
 tests/                            Dedup, correlation, scoring, acceptance
 ```
 
@@ -64,7 +65,7 @@ pytest -q
 streamlit run app.py
 ```
 
-`streamlit run app.py` opens the SOC console. The top row is Raw Alerts → Deduplicated Events → Correlated Incidents → High-Priority Incidents, plus alert-fatigue reduction (`300 raw → N reviewable`). Queue order toggles **AI Risk-Based Triage** vs **Legacy SIEM Triage** and reorders the same incidents. The main pane is the full-width queue until the analyst clicks **Open case** or a table row; that replaces the queue with a case workspace (Overview / Timeline / ATT&CK / Risk / Response / Evidence) and a **← Back to queue** control that keeps filters and table state. Each case shows risk score, AI rank, legacy rank, rank delta, context badges (from CMDB/IAM/ATT&CK, never `scenario_id`), ablation drivers, a cited timeline, and why the alerts were grouped.
+`streamlit run app.py` opens three workspaces over the same cached snapshot: **Security overview**, **Incident queue**, and **Detection intelligence**. The snapshot is labeled as historical / demo data (offline JSONL + CMDB/IAM), not a live SIEM feed. Overview is the executive landing page: open exposure, P0–P1 cases, affected assets, ownership, and response progress. The queue is the analyst workbench — two high-priority cards, then a working table (Priority · Incident · Affected service/asset · Status · Owner · Age · Risk). Opening a case or selecting a row replaces the queue with a decision brief and investigation tabs; **← Back to queue** keeps filters and selection. Detection intelligence compares AI vs legacy ranks, explains significant moves, and reports `N% fewer items to review` when 300 raw alerts become 111 incidents. That figure is volume compression, not measured time saved or fatigue. Case state (owner, status, notes, checklist) is session-local. Reset lives under **Demo / admin**.
 
 ## Risk formula
 
@@ -110,7 +111,7 @@ Every card answers six questions from incident facts only:
 | --- | --- |
 | What happened? | `executive_summary` |
 | Why is it ranked here? | `why_prioritized` (ablation percents) |
-| Why did the legacy SIEM get it wrong? | `contrastive_explanation` |
+| Why does this incident rank higher? | `contrastive_explanation` |
 | Why might this be real rather than noise? | `why_not_false_positive` |
 | How did the attack evolve? | `attack_timeline` |
 | What should the SOC do now? | `recommended_actions` |
