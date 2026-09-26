@@ -64,7 +64,7 @@ pytest -q
 streamlit run app.py
 ```
 
-`streamlit run app.py` opens the SOC console. The top row is Raw Alerts → Deduplicated Events → Correlated Incidents → High-Priority Incidents, plus alert-fatigue reduction (`300 raw → N reviewable`). Queue order toggles **AI Risk-Based Triage** vs **Legacy SIEM Triage** and reorders the same incidents. Each case shows risk score, AI rank, legacy rank, rank delta, context badges (from CMDB/IAM/ATT&CK, never `scenario_id`), ablation drivers, a cited timeline, and why the alerts were grouped.
+`streamlit run app.py` opens the SOC console. The top row is Raw Alerts → Deduplicated Events → Correlated Incidents → High-Priority Incidents, plus alert-fatigue reduction (`300 raw → N reviewable`). Queue order toggles **AI Risk-Based Triage** vs **Legacy SIEM Triage** and reorders the same incidents. The main pane is the full-width queue until the analyst clicks **Open case** or a table row; that replaces the queue with a case workspace (Overview / Timeline / ATT&CK / Risk / Response / Evidence) and a **← Back to queue** control that keeps filters and table state. Each case shows risk score, AI rank, legacy rank, rank delta, context badges (from CMDB/IAM/ATT&CK, never `scenario_id`), ablation drivers, a cited timeline, and why the alerts were grouped.
 
 ## Risk formula
 
