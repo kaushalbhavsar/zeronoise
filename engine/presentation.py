@@ -236,7 +236,8 @@ def urgency_sentence(item: ScoredIncident) -> str:
     """One factual sentence for why this card is at the top of the queue."""
     tactics = set(item.incident.unique_tactics)
     badges = context_badges(item)
-    asset = item.incident.unique_hosts[0] if item.incident.unique_hosts else "an unresolved host"
+    roles = incident_roles(item)
+    asset = roles["affected_asset"] if roles["affected_asset"] != "—" else "an unresolved host"
     if "Exfiltration" in tactics and "Crown Jewel" in badges:
         return f"Observed exfiltration involving {asset}, a crown-jewel production system."
     if "Impact" in tactics:
@@ -384,3 +385,183 @@ def next_recommended_action(card: IncidentCard) -> str:
     if actions:
         return actions[0]
     return "Review the timeline and assign an owner before closing."
+
+
+def vendor_severity(item: ScoredIncident) -> str:
+    return item.incident.max_severity
+
+
+def incident_roles(item: ScoredIncident) -> dict[str, str]:
+    """Roles used by the queue, title, brief, and evidence — same facts everywhere.
+
+    Distinguishes initial identity, privileged identity, source host, and destination.
+    Title asset matches the risk-scorer title (highest-sensitivity resolved asset).
+    """
+    from config import DATA_WEIGHT, ENVIRONMENT_WEIGHT, PRIVILEGE_WEIGHT
+
+    alerts = sorted(
+        item.incident.alerts,
+        key=lambda alert: (alert.first_seen or alert.timestamp, alert.alert_id),
+    )
+    initial_identity = "—"
+    for alert in alerts:
+        user = alert.entities.user_id or (alert.identity.user_id if alert.identity else None)
+        if user:
+            initial_identity = user
+            break
+
+    privileged_identity = "—"
+    priv_score = -1.0
+    for alert in item.incident.alerts:
+        ident = alert.identity
+        if not ident:
+            continue
+        score = PRIVILEGE_WEIGHT.get(ident.privilege_tier, 0.0)
+        if score > priv_score:
+            priv_score = score
+            privileged_identity = ident.user_id
+
+    source_host = "—"
+    for alert in alerts:
+        host = alert.entities.host_id or (alert.asset.host_id if alert.asset else None)
+        if host:
+            source_host = host
+            break
+
+    destination = "—"
+    for alert in alerts:
+        if alert.dest_asset and alert.mitre_tactic == "Exfiltration":
+            destination = alert.dest_asset.host_id
+            break
+    if destination == "—":
+        for alert in reversed(alerts):
+            if alert.dest_asset:
+                destination = alert.dest_asset.host_id
+                break
+
+    title_asset = "—"
+    title_score = -1.0
+    for alert in item.incident.alerts:
+        for asset in (alert.asset, alert.dest_asset):
+            if not asset:
+                continue
+            score = DATA_WEIGHT.get(asset.data_sensitivity, 0.0) + ENVIRONMENT_WEIGHT.get(
+                asset.environment, 0.0
+            )
+            if score > title_score:
+                title_score = score
+                title_asset = asset.hostname
+    if title_asset == "—" and item.incident.unique_hosts:
+        title_asset = item.incident.unique_hosts[0]
+
+    title_identity = privileged_identity if privileged_identity != "—" else initial_identity
+    if title_identity == "—" and item.incident.unique_users:
+        title_identity = item.incident.unique_users[0]
+
+    return {
+        "initial_identity": initial_identity,
+        "privileged_identity": privileged_identity,
+        "source_host": source_host,
+        "destination": destination,
+        "affected_asset": title_asset,
+        "title_identity": title_identity,
+    }
+
+
+def mask_identifier(value: str | None) -> str:
+    """Presentation masking only — not access control."""
+    if not value or value in {"—", "Unassigned", "You"}:
+        return value or "—"
+    if value.replace(".", "").isdigit() and value.count(".") == 3:
+        a, b, _, _ = value.split(".")
+        return f"{a}.{b}.x.x"
+    if len(value) <= 4:
+        return "••••"
+    return f"{value[:4]}••••"
+
+
+def mask_text(text: str, tokens: list[str] | tuple[str, ...], enabled: bool) -> str:
+    """Replace known identifiers in prose. Presentation only."""
+    if not enabled or not text:
+        return text
+    out = text
+    for token in sorted({item for item in tokens if item}, key=len, reverse=True):
+        if token in {"—", "Unassigned", "You"}:
+            continue
+        out = out.replace(token, mask_identifier(token))
+    return out
+
+
+def role_tokens(item: ScoredIncident) -> list[str]:
+    roles = incident_roles(item)
+    tokens = [item.incident.incident_id, item.title, *roles.values()]
+    tokens.extend(item.incident.unique_users)
+    tokens.extend(item.incident.unique_hosts)
+    for alert in item.incident.alerts:
+        tokens.append(alert.alert_id)
+        if alert.entities.src_ip:
+            tokens.append(alert.entities.src_ip)
+        if alert.entities.dest_ip:
+            tokens.append(alert.entities.dest_ip)
+        if alert.asset:
+            tokens.extend([alert.asset.host_id, alert.asset.hostname, alert.asset.ip_address])
+        if alert.dest_asset:
+            tokens.extend(
+                [alert.dest_asset.host_id, alert.dest_asset.hostname, alert.dest_asset.ip_address]
+            )
+    return [token for token in tokens if token]
+
+
+METRIC_DEFINITIONS = {
+    "open": (
+        "Organization-wide snapshot, not the current queue filter. "
+        "Window: this demo reporting period. "
+        "Calculation: cases whose session status is New, Acknowledged, Investigating, or Escalated."
+    ),
+    "p0_p1": (
+        "Organization-wide snapshot, not the current queue filter. "
+        "Window: this demo reporting period. "
+        "Calculation: open cases with risk_score ≥ 70 (P0 ≥ 85, P1 ≥ 70). Not vendor severity."
+    ),
+    "unacked": (
+        "Organization-wide snapshot, not the current queue filter. "
+        "Window: this demo reporting period. "
+        "Calculation: open cases whose session status is still New."
+    ),
+    "assigned": (
+        "Organization-wide snapshot, not the current queue filter. "
+        "Window: this demo reporting period. "
+        "Calculation: open cases whose session owner is not Unassigned."
+    ),
+    "prod": (
+        "Organization-wide snapshot, not the current queue filter. "
+        "Window: this demo reporting period. "
+        "Calculation: open cases with at least one CMDB asset in environment=prod. "
+        "Production is scope, not a healthy state."
+    ),
+    "matching": (
+        "Current queue filters only. "
+        "Window: this demo reporting period. "
+        "Calculation: incidents remaining after preset, search, priority, status, and environment filters."
+    ),
+    "raw": (
+        "Organization-wide snapshot. Window: this demo reporting period. "
+        "Calculation: raw SIEM rows loaded from the JSONL file before dedup."
+    ),
+    "dedup": (
+        "Organization-wide snapshot. Window: this demo reporting period. "
+        "Calculation: survivors after rule+entity collapse inside the 15-minute window."
+    ),
+    "incidents": (
+        "Organization-wide snapshot. Window: this demo reporting period. "
+        "Calculation: correlated connected components after the 4-hour join window."
+    ),
+    "high": (
+        "Organization-wide snapshot. Window: this demo reporting period. "
+        "Calculation: pipeline high_priority_count (risk-based), not vendor Critical."
+    ),
+    "edges": (
+        "Organization-wide snapshot. Window: this demo reporting period. "
+        "Calculation: incidents that have at least one inter-alert correlation edge."
+    ),
+}

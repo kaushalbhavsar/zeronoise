@@ -8,12 +8,15 @@ from engine.presentation import (
     correlation_evidence,
     grouped_correlation_evidence,
     group_recommended_actions,
+    incident_roles,
+    mask_identifier,
     parse_timeline_line,
     rank_delta,
     rank_delta_label,
     raw_alert_ids,
     review_reduction_label,
     significant_rank_moves,
+    vendor_severity,
 )
 from engine.risk_scorer import score_incident, score_incidents
 from tests.test_risk_scoring import _breach_incident, _scanner_incident
@@ -162,6 +165,32 @@ def test_parse_timeline_line_extracts_clock_and_alert() -> None:
     assert parsed["alert_id"] == "ALRT-A-001"
     assert parsed["tactic"] == "Initial Access"
     assert "Anomalous VPN login" in parsed["detail"]
+
+
+def test_incident_roles_distinguish_identities_and_hosts() -> None:
+    breach = score_incident(_breach_incident())
+    roles = incident_roles(breach)
+    assert roles["initial_identity"] == "u-maria-chen"
+    assert roles["privileged_identity"] == "u-maria-chen"
+    assert roles["source_host"] == "host-pci-db-01"
+    assert roles["destination"]
+    assert roles["affected_asset"]
+    assert vendor_severity(breach) == "Medium"
+    assert mask_identifier("usr_admin_root") == "usr_••••"
+    assert mask_identifier("10.0.1.5") == "10.0.x.x"
+    result = run_pipeline(str(ALERTS_PATH), str(CMDB_PATH), str(IAM_PATH), use_llm=False)
+    crown = next(
+        item
+        for item in result.risk_ranked
+        if "usr_admin_root" in item.incident.unique_users
+    )
+    crown_roles = incident_roles(crown)
+    assert crown_roles["privileged_identity"] == "usr_admin_root"
+    assert crown_roles["initial_identity"]
+    assert crown_roles["initial_identity"] != "—"
+    assert crown.title
+    assert crown_roles["title_identity"] in crown.title
+    assert crown_roles["affected_asset"] in crown.title
 
 
 def test_significant_rank_moves_include_promoted_exfil() -> None:
