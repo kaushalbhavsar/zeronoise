@@ -54,8 +54,8 @@ def test_pipeline_is_deterministic_for_fixed_seed() -> None:
 def test_mandatory_ranking_outcomes() -> None:
     result = _pipeline()
     m = result.metrics
-    assert m.quiet_crown_jewel_risk_rank == 1
-    assert m.ransomware_staging_risk_rank == 2
+    assert m.ransomware_staging_risk_rank == 1
+    assert m.quiet_crown_jewel_risk_rank == 2
     assert m.noisy_false_priority_legacy_rank == 1
     assert m.quiet_crown_jewel_legacy_rank is not None
     assert m.quiet_crown_jewel_legacy_rank > 1
@@ -137,14 +137,18 @@ def test_contrastive_text_never_compares_an_incident_to_itself() -> None:
         for card in result.cards
         if card.risk_rank == result.metrics.noisy_false_priority_risk_rank
     )
-    breach = result.cards[0]
+    crown = next(
+        card
+        for card in result.cards
+        if card.risk_rank == result.metrics.quiet_crown_jewel_risk_rank
+    )
     assert scanner.contrastive
-    assert breach.incident_id in (scanner.contrastive or "")
-    assert scanner.incident_id != breach.incident_id
+    assert crown.incident_id in (scanner.contrastive or "")
+    assert scanner.incident_id != crown.incident_id
     assert "ranks below" in (scanner.contrastive or "")
-    assert breach.contrastive
-    assert scanner.incident_id in (breach.contrastive or "")
-    assert "outranks" in (breach.contrastive or "")
+    assert crown.contrastive
+    assert scanner.incident_id in (crown.contrastive or "")
+    assert "outranks" in (crown.contrastive or "")
 
 
 def test_malformed_rows_do_not_fail_the_pipeline() -> None:
@@ -153,4 +157,5 @@ def test_malformed_rows_do_not_fail_the_pipeline() -> None:
     broken.insert(0, {"id": "BAD", "time": "not-a-time"})
     result = run_pipeline(alerts=broken, assets=assets, identities=identities)
     assert result.metrics.dropped_alert_count >= 1
-    assert result.metrics.quiet_crown_jewel_risk_rank == 1
+    assert result.metrics.ransomware_staging_risk_rank == 1
+    assert result.metrics.quiet_crown_jewel_risk_rank == 2

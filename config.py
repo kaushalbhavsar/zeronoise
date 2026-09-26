@@ -124,6 +124,37 @@ PRIVILEGE_WEIGHT: dict[str, float] = {
     "tier_1_cloud_admin": 1.4,
     "tier_0_domain_admin": 1.8,
 }
+DATA_WEIGHT: dict[str, float] = {
+    "public": 0.5,
+    "internal": 0.9,
+    "confidential": 1.4,
+    "crown_jewel_pii_pci": 2.0,
+}
+CRITICALITY_WEIGHT: dict[int, float] = {
+    1: 0.4,
+    2: 0.8,
+    3: 1.2,
+    4: 1.6,
+    5: 2.0,
+}
+ASSET_ENV_BLEND = 0.35
+ASSET_DATA_BLEND = 0.35
+ASSET_CRIT_BLEND = 0.30
+ASSET_SCORE_MIN = 0.4
+ASSET_SCORE_MAX = 2.0
+
+# Identity impact. Highest-risk involved identity wins (P_priv).
+PRIVILEGE_WEIGHT: dict[str, float] = {
+    "standard_user": 0.5,
+    "service_account": 1.0,
+    "tier_1_cloud_admin": 1.4,
+    "tier_0_domain_admin": 1.8,
+}
+
+# Blast radius / context multiplier C. Configurable so the demo can
+# emphasize crown-jewel asset impact over identity without code changes.
+BLAST_ASSET_WEIGHT = 0.65
+BLAST_IDENTITY_WEIGHT = 0.35
 
 # Unknown CMDB/IAM context is not treated as crown-jewel or as zero.
 NEUTRAL_IMPACT = 0.90

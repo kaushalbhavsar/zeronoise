@@ -130,21 +130,38 @@ class RawAlert(BaseModel):
 
 
 class RiskDriver(BaseModel):
-    name: str
-    score: float
-    weight: float
-    contribution: float
-    contribution_pct: float
-    evidence: list[str] = Field(default_factory=list)
+    factor: str
+    contribution_pct: int
+    evidence: str
 
 
 class RiskBreakdown(BaseModel):
+    """Normalized score plus internal factors. RawRisk is not analyst-facing."""
+
     risk_score: float
-    raw_weighted_score: float
-    noise_score: float
-    noise_discount: float
+    fidelity_b: float
+    progression_k: float
+    blast_c: float
+    asset_risk: float
+    identity_risk: float
     drivers: list[RiskDriver]
     formula: str
+    raw_weighted_score: float = 0.0  # kept for fingerprint tests; not shown in UI
+
+
+class ExplainableIncidentCard(BaseModel):
+    incident_id: str
+    priority_rank: int
+    naive_siem_rank: int
+    risk_score: float
+    raw_alert_count: int
+    deduplicated_alert_count: int
+    executive_summary: str
+    why_prioritized: list[RiskDriver]
+    contrastive_explanation: str
+    why_not_false_positive: str
+    attack_timeline: list[str]
+    recommended_actions: list[str]
 
 
 RelationshipType = Literal[
@@ -195,6 +212,7 @@ class IncidentCard(BaseModel):
     risk_score: float
     legacy_score: float
     risk_rank: int | None = None
+    priority_rank: int | None = None
     legacy_rank: int | None = None
     naive_siem_rank: int | None = None
     first_seen: datetime
@@ -211,12 +229,33 @@ class IncidentCard(BaseModel):
     executive_summary: str
     narrative: str
     containment: list[str]
+    recommended_actions: list[str] = Field(default_factory=list)
+    why_prioritized: list[RiskDriver] = Field(default_factory=list)
+    why_not_false_positive: str = ""
+    attack_timeline: list[str] = Field(default_factory=list)
     contrastive: str | None = None
+    contrastive_explanation: str = ""
     risk: RiskBreakdown
     alert_ids: list[str]
     edges: list[GraphEdge] = Field(default_factory=list)
     llm_enhanced: bool = False
     explanation_source: Literal["deterministic", "llm"] = "deterministic"
+
+    def as_explainable(self) -> "ExplainableIncidentCard":
+        return ExplainableIncidentCard(
+            incident_id=self.incident_id,
+            priority_rank=self.priority_rank or self.risk_rank or 0,
+            naive_siem_rank=self.naive_siem_rank or self.legacy_rank or 0,
+            risk_score=self.risk_score,
+            raw_alert_count=self.raw_event_count,
+            deduplicated_alert_count=self.alert_count,
+            executive_summary=self.executive_summary,
+            why_prioritized=list(self.why_prioritized or self.risk.drivers),
+            contrastive_explanation=self.contrastive_explanation or self.contrastive or "",
+            why_not_false_positive=self.why_not_false_positive,
+            attack_timeline=list(self.attack_timeline),
+            recommended_actions=list(self.recommended_actions or self.containment),
+        )
 
 
 class PipelineMetrics(BaseModel):

@@ -40,23 +40,10 @@ def _identities(scored: ScoredIncident) -> list[Identity]:
     return list(seen.values())
 
 
-def _positive_drivers(scored: ScoredIncident) -> list[RiskDriver]:
-    return [d for d in scored.risk.drivers if d.name != "noise_discount"]
-
-
-def _noise_driver(scored: ScoredIncident) -> RiskDriver | None:
-    for driver in scored.risk.drivers:
-        if driver.name == "noise_discount":
-            return driver
-    return None
-
-
 def _top_drivers(scored: ScoredIncident, n: int = 3) -> list[RiskDriver]:
-    return sorted(_positive_drivers(scored), key=lambda d: d.contribution_pct, reverse=True)[:n]
-
-
-def _human_driver(name: str) -> str:
-    return name.replace("_", " ")
+    return sorted(
+        scored.risk.drivers, key=lambda d: (-d.contribution_pct, d.factor)
+    )[:n]
 
 
 def deterministic_summary(scored: ScoredIncident) -> str:
@@ -65,7 +52,7 @@ def deterministic_summary(scored: ScoredIncident) -> str:
     identities = _identities(scored)
     top = _top_drivers(scored, 2)
     driver_txt = " and ".join(
-        f"{_human_driver(d.name)} ({d.contribution_pct:.1f}%)" for d in top
+        f"{d.factor} ({d.contribution_pct}%)" for d in top
     )
     asset_txt = "unattributed systems"
     if assets:
@@ -103,11 +90,14 @@ def deterministic_narrative(scored: ScoredIncident) -> str:
         lines.append("Identities: " + ", ".join(inc.unique_users) + ".")
     if inc.unique_hosts:
         lines.append("Hosts: " + ", ".join(inc.unique_hosts) + ".")
-    noise = _noise_driver(scored)
-    if noise and scored.risk.noise_discount >= 0.05:
+    fp = next(
+        (d for d in scored.risk.drivers if d.factor == "FP/Noise Suppression"),
+        None,
+    )
+    if fp and fp.contribution_pct >= 15:
         lines.append(
-            f"Score was reduced {scored.risk.noise_discount * 100:.1f}% because the "
-            f"cluster is bursty and has a high historical false-positive rate."
+            "FP/noise suppression removed a material share of the score "
+            f"({fp.contribution_pct}%) because historical false-positive rates are high."
         )
     lines.append(
         "Vendor severity is treated as a residual signal only "
@@ -184,10 +174,45 @@ def contrastive_explanation(
             f"({a.risk.risk_score:.1f} vs {b.risk.risk_score:.1f})"
         )
     return (
-        f"{relation} because business impact is {a_impact:.2f} vs {b_impact:.2f} "
-        f"and attack progression is {a_prog:.2f} vs {b_prog:.2f}. {volume_note} "
+        f"{relation} because blast-radius C is {a_impact:.2f} vs {b_impact:.2f} "
+        f"and kill-chain K is {a_prog:.2f} vs {b_prog:.2f}. {volume_note} "
         "Raw volume and vendor Critical labels are not sufficient to win the queue."
     )
+
+
+def why_not_false_positive(scored: ScoredIncident) -> str:
+    inc = scored.incident
+    mean_fpr = (
+        sum(alert.false_positive_rate * alert.event_count for alert in inc.alerts)
+        / max(1, inc.total_event_count)
+    )
+    sensors = len(inc.unique_products)
+    stages = len(inc.unique_tactics)
+    if mean_fpr >= 0.6 and stages <= 2:
+        return (
+            f"Mean historical FPR is {mean_fpr:.2f} across {inc.total_event_count} raw events "
+            f"and only {stages} tactic(s) from {sensors} sensor(s). "
+            "This looks like a noisy signature unless new kill-chain stages appear."
+        )
+    return (
+        f"Mean FPR is {mean_fpr:.2f}, but {stages} ATT&CK tactic(s) and {sensors} sensor(s) "
+        f"plus blast-radius C={scored.risk.blast_c:.2f} are inconsistent with a single "
+        "false-positive flood. Confirm with the timeline before closing."
+    )
+
+
+def attack_timeline(scored: ScoredIncident) -> list[str]:
+    lines: list[str] = []
+    for alert in sorted(
+        scored.incident.alerts,
+        key=lambda item: (item.first_seen or item.timestamp, item.alert_id),
+    ):
+        start = (alert.first_seen or alert.timestamp).isoformat()
+        lines.append(
+            f"{start}  {alert.source_product}  {alert.severity_raw}  "
+            f"{alert.mitre_tactic}  {alert.rule_name}  n={alert.event_count}"
+        )
+    return lines
 
 
 def build_card(
@@ -198,12 +223,15 @@ def build_card(
     legacy_rank: int | None = None,
 ) -> IncidentCard:
     inc = scored.incident
+    contrastive = contrastive_explanation(scored, contrast_with)
+    actions = deterministic_containment(scored)
     return IncidentCard(
         incident_id=inc.incident_id,
         title=scored.title,
         risk_score=scored.risk.risk_score,
         legacy_score=scored.legacy_score,
         risk_rank=risk_rank,
+        priority_rank=risk_rank,
         legacy_rank=legacy_rank if legacy_rank is not None else scored.naive_siem_rank,
         naive_siem_rank=scored.naive_siem_rank if scored.naive_siem_rank is not None else legacy_rank,
         first_seen=inc.first_seen,
@@ -219,8 +247,13 @@ def build_card(
         identities=_identities(scored),
         executive_summary=deterministic_summary(scored),
         narrative=deterministic_narrative(scored),
-        containment=deterministic_containment(scored),
-        contrastive=contrastive_explanation(scored, contrast_with),
+        containment=actions,
+        recommended_actions=list(actions),
+        why_prioritized=list(scored.risk.drivers),
+        why_not_false_positive=why_not_false_positive(scored),
+        attack_timeline=attack_timeline(scored),
+        contrastive=contrastive,
+        contrastive_explanation=contrastive or "",
         risk=scored.risk,
         alert_ids=list(inc.alert_ids),
         edges=list(inc.edges),
@@ -243,9 +276,7 @@ def _locked_facts(card: IncidentCard) -> dict:
         "max_severity": card.max_severity,
         "attribution": [
             {
-                "name": d.name,
-                "score": d.score,
-                "weight": d.weight,
+                "factor": d.factor,
                 "contribution_pct": d.contribution_pct,
             }
             for d in card.risk.drivers

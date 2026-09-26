@@ -3,10 +3,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from engine.correlator import correlate_alerts
+from config import ATTRIBUTION_FACTORS, BLAST_ASSET_WEIGHT, BLAST_IDENTITY_WEIGHT, RISK_SCALE
+from engine.explainer import build_card
 from engine.risk_scorer import (
+    blast_radius,
     diminishing_volume,
     fidelity_a,
     naive_siem_score,
+    normalize_risk,
     positive_attribution_sum,
     score_business_impact,
     score_incident,
@@ -236,10 +240,62 @@ def test_crown_jewel_breach_outranks_critical_sandbox_scanner() -> None:
     assert scanner.legacy_score > breach.legacy_score
 
 
+def test_blast_radius_uses_configurable_blend() -> None:
+    assert BLAST_ASSET_WEIGHT == 0.65
+    assert BLAST_IDENTITY_WEIGHT == 0.35
+    assert abs(blast_radius(1.79, 1.8) - (0.65 * 1.79 + 0.35 * 1.8)) < 1e-9
+
+
+def test_normalize_risk_is_monotonic_and_bounded() -> None:
+    lows = [normalize_risk(x) for x in (0, 5, 20, 40, 80, 200)]
+    assert lows[0] == 0.0
+    assert all(0.0 <= value <= 100.0 for value in lows)
+    assert lows == sorted(lows)
+    assert RISK_SCALE == 45.0
+
+
+def test_integer_partition_sums_to_100() -> None:
+    pcts = integer_partition(
+        {
+            "Alert Fidelity": 12.2,
+            "Kill-Chain Progression": 7.8,
+            "Blast Radius": 3.1,
+            "FP/Noise Suppression": 0.4,
+        },
+        ATTRIBUTION_FACTORS,
+    )
+    assert sum(pcts.values()) == 100
+    assert set(pcts) == set(ATTRIBUTION_FACTORS)
+
+
 def test_positive_attribution_is_a_partition() -> None:
     scored = score_incident(_breach_incident())
-    total = positive_attribution_sum(scored.risk)
-    assert abs(total - 100.0) < 0.05
+    assert positive_attribution_sum(scored.risk) == 100
+    assert [d.factor for d in scored.risk.drivers] == list(ATTRIBUTION_FACTORS)
+
+
+def test_ablation_uses_score_drops_not_independent_splits() -> None:
+    scored = score_incident(_breach_incident())
+    real = scored.risk.risk_score
+    baseline = normalize_risk(
+        raw_risk(2.0, scored.risk.progression_k, scored.risk.blast_c)
+    )
+    fidelity = next(d for d in scored.risk.drivers if d.factor == "Alert Fidelity")
+    assert real > baseline
+    assert fidelity.contribution_pct > 0
+
+
+def test_explainable_card_schema() -> None:
+    scored = score_incident(_breach_incident())
+    card = build_card(scored, risk_rank=1, legacy_rank=4)
+    exported = card.as_explainable()
+    assert exported.incident_id == scored.incident.incident_id
+    assert exported.priority_rank == 1
+    assert exported.why_prioritized
+    assert sum(d.contribution_pct for d in exported.why_prioritized) == 100
+    assert exported.attack_timeline
+    assert exported.recommended_actions
+    assert exported.why_not_false_positive
 
 
 def test_scoring_is_deterministic() -> None:

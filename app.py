@@ -215,14 +215,14 @@ def kill_chain_figure(tactics: list[str]) -> go.Figure:
 
 
 def driver_chart(card: IncidentCard) -> go.Figure:
-    drivers = [d for d in card.risk.drivers if d.name != "noise_discount"]
+    drivers = list(card.why_prioritized or card.risk.drivers)
     fig = go.Figure(
         go.Bar(
             x=[d.contribution_pct for d in drivers],
-            y=[d.name.replace("_", " ") for d in drivers],
+            y=[d.factor for d in drivers],
             orientation="h",
             marker_color="#3d6d99",
-            text=[f"{d.contribution_pct:.1f}%" for d in drivers],
+            text=[f"{d.contribution_pct}%" for d in drivers],
             textposition="outside",
         )
     )
@@ -233,7 +233,7 @@ def driver_chart(card: IncidentCard) -> go.Figure:
         plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#d7e0ea", size=12),
         xaxis=dict(
-            title="Contribution %",
+            title="Ablation contribution %",
             range=[0, max(42, max(d.contribution_pct for d in drivers) + 8)],
         ),
         yaxis=dict(autorange="reversed"),

@@ -10,12 +10,12 @@ The core is deterministic and works fully offline. An LLM, if you turn it on, ma
 
 On the seeded demo dataset (`RANDOM_SEED = 42`, ~300 alerts over 24 hours):
 
-| Queue | Rank 1 | Quiet crown-jewel (4 Medium alerts) | Ransomware staging |
+| Queue | Rank 1 | Rank 2 | Sandbox scanner (120 Critical) |
 | --- | --- | --- | --- |
-| Legacy SIEM (severity × volume) | 120 Critical WAF/IDS hits on `dev-sandbox-04` | Buried | Mid-pack |
-| Risk-based incidents | `prd-billing-db-01` exfil via `usr_admin_root` | **#1** | **#2** |
+| Legacy SIEM (severity × volume) | Scanner on `dev-sandbox-04` (1800) | Ransomware staging | **#1** |
+| Risk-based incidents | 6-stage Impact on `wrk-corp-14` (88.3) | Crown-jewel exfil via `usr_admin_root` (80.8) | **#3** (30.9) |
 
-The sandbox cluster is not hard-coded to a low risk rank. High FPR, sandbox/public/crit-1 context, and no kill-chain progression suppress it naturally.
+Those ranks come from `RawRisk = B × K × C`, not from `scenario_id`. The scanner is suppressed by a short kill chain, sandbox/public/crit-1 context, and FPR 0.85. The 4-Medium crown-jewel incident still outranks it; the 6-stage High ransomware chain has higher fidelity B, so it leads the risk queue.
 
 Alert fatigue drops because hundreds of raw alerts collapse into a short incident queue, and the item at the top is the one that actually matters.
 
@@ -105,9 +105,9 @@ Disabled by default (`LLM_ENABLED = False`). When enabled, the model may rewrite
 
 | ID | Story | Alerts | Expected rank |
 | --- | --- | --- | --- |
-| A `quiet_crown_jewel` | VPN → PowerShell creds → SSH pivot → 2.4 GB exfil on `prd-billing-db-01` | 4 Medium / ~90 min | Risk **#1**, legacy buried |
-| B `ransomware_staging` | Phish → exec → LSASS → discovery → SMB scan → shadow-copy delete on `wrk-corp-14` | 6 Medium/High | Risk **#2** |
-| C `noisy_false_priority` | CVE-2024-21762 WAF/IDS flood on `dev-sandbox-04` | 120 Critical | Legacy **#1**, risk deprioritized by the formula |
+| A `quiet_crown_jewel` | VPN → PowerShell creds → SSH pivot → 2.4 GB exfil on `prd-billing-db-01` | 4 Medium / ~90 min | Risk **#2**, legacy buried |
+| B `ransomware_staging` | Phish → exec → LSASS → discovery → SMB scan → shadow-copy delete on `wrk-corp-14` | 6 Medium/High | Risk **#1** |
+| C `noisy_false_priority` | CVE-2024-21762 WAF/IDS flood on `dev-sandbox-04` | 120 Critical | Legacy **#1**, risk **#3** |
 | Background | Failed logins, vuln scans, isolated malware, admin scripts, WAF probes, brute-force bursts | 170 | Must not weld into a giant incident |
 
 The normalizer parses JSONL, canonicalizes timestamps and IPs, resolves host IP ↔ host ID, enriches from CMDB/IAM, and keeps going when a row is malformed or an asset/user is unknown (neutral context weights).
@@ -127,4 +127,4 @@ The normalizer parses JSONL, canonicalizes timestamps and IPs, resolves host IP 
 pytest tests/test_deduplication.py tests/test_correlation.py tests/test_risk_scoring.py tests/test_acceptance.py -q
 ```
 
-Acceptance checks risk #1 / #2 for scenarios A and B, legacy #1 for C, measurable fatigue reduction, isolated background noise, determinism under seed 42, unused `scenario_id`, and that a malformed row does not fail the pipeline.
+Acceptance checks the seed-42 ranking that the formula produces (B then A on risk, C on legacy), measurable fatigue reduction, isolated background noise, determinism, unused `scenario_id`, and that a malformed row does not fail the pipeline.

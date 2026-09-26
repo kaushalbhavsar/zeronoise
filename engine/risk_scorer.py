@@ -1,4 +1,4 @@
-"""Deterministic incident risk scoring and driver attribution.
+"""Deterministic incident risk scoring and counterfactual attribution.
 
 The real score operates on deduplicated, correlated incidents:
 
@@ -401,6 +401,7 @@ def score_incident(incident: CandidateIncident) -> ScoredIncident:
         noise_discount=round(discount, 6),
         drivers=drivers + [noise_driver],
         formula=FORMULA,
+        raw_weighted_score=round(raw, 4),
     )
     return ScoredIncident(
         incident=incident,
