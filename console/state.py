@@ -35,7 +35,7 @@ SESSION_ACTOR = "You"
 
 
 @st.cache_data(show_spinner="Loading incident snapshot…")
-def load_result(cache_version: int = 8) -> PipelineResult:
+def load_result(cache_version: int = 9) -> PipelineResult:
     if not ALERTS_PATH.exists():
         from data.generate_synthetic_data import write_dataset
 

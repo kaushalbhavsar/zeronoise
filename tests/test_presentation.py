@@ -113,11 +113,11 @@ def test_seed_pipeline_actions_name_real_crown_jewel_entities() -> None:
         if "usr_admin_root" in card.users and "prd-billing-db-01" in card.hosts
     )
     blob = " ".join(crown.recommended_actions)
-    assert "Disable or rotate usr_admin_root credentials." in crown.recommended_actions
+    assert "Disable usr_admin_root and rotate its credentials." in crown.recommended_actions
     assert "Isolate prd-app-02 from the network." in crown.recommended_actions
-    assert "Restrict outbound connectivity from prd-billing-db-01." in crown.recommended_actions
-    assert "Preserve EDR telemetry before remediation." in crown.recommended_actions
-    assert "Review authentication activity associated with usr_svc_deploy." in crown.recommended_actions
+    assert "Block outbound traffic from prd-billing-db-01." in crown.recommended_actions
+    assert "Preserve EDR logs before you change the host." in crown.recommended_actions
+    assert "Review sign-in activity for usr_svc_deploy." in crown.recommended_actions
     assert "involved hosts" not in blob
     assert "involved accounts" not in blob
 
@@ -171,9 +171,9 @@ def test_grouped_correlation_collapses_pair_reasons() -> None:
 def test_action_groups_cover_validate_contain_preserve_recover() -> None:
     grouped = group_recommended_actions(
         [
-            "Review authentication activity associated with usr_svc_deploy.",
+            "Review sign-in activity for usr_svc_deploy.",
             "Isolate prd-app-02 from the network.",
-            "Preserve EDR telemetry before remediation.",
+            "Preserve EDR logs before you change the host.",
             "Restore wrk-corp-14 from last known-good backup.",
         ]
     )

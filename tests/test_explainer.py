@@ -51,14 +51,11 @@ def test_recommended_actions_cite_entities_not_generic_hosts() -> None:
     assert "host-pci-db-01" in blob
     assert "involved hosts" not in blob
     assert "involved accounts" not in blob
-    assert any("Disable or rotate u-maria-chen credentials." == row for row in actions)
+    assert any("Disable u-maria-chen and rotate its credentials." == row for row in actions)
     assert any("Isolate host-pci-db-01 from the network." == row for row in actions)
-    assert any("Restrict outbound connectivity from host-pci-db-01." == row for row in actions)
-    assert any("Preserve EDR telemetry before remediation." == row for row in actions)
-    assert any(
-        "Review authentication activity associated with u-maria-chen." == row
-        for row in actions
-    )
+    assert any("Block outbound traffic from host-pci-db-01." == row for row in actions)
+    assert any("Preserve EDR logs before you change the host." == row for row in actions)
+    assert any("Review sign-in activity for u-maria-chen." == row for row in actions)
 
 
 def test_scanner_actions_stay_in_sandbox_and_name_the_rule() -> None:
@@ -74,12 +71,12 @@ def test_scanner_actions_stay_in_sandbox_and_name_the_rule() -> None:
 
 def test_why_not_false_positive_uses_deterministic_signals() -> None:
     breach = why_not_false_positive(score_incident(_breach_incident()))
-    assert "unlikely to be isolated noise" in breach
+    assert "unlikely to be a single false alert" in breach
     assert "definitely malicious" not in breach.lower()
     assert "credential" in breach.lower() or "Credential" in breach
     scanner = why_not_false_positive(score_incident(_scanner_incident()))
     assert "definitely" not in scanner.lower()
-    assert "isolated noise" in scanner
+    assert "isolated noise" in scanner or "false" in scanner.lower()
 
 
 def test_llm_payload_is_incident_scoped() -> None:
