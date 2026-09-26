@@ -16,6 +16,7 @@ from console.state import (
     SEVERITY_TOKEN,
     STATUSES,
     case,
+    open_case_view,
     presenting,
     reset_case_state,
     snapshot_now,
@@ -29,6 +30,8 @@ from engine.presentation import (
     mask_identifier,
     mask_text,
     role_tokens,
+    urgency_sentence,
+    vendor_severity,
 )
 from engine.schemas import PipelineResult, ScoredIncident
 
@@ -130,6 +133,58 @@ def owner_of(item: ScoredIncident) -> str:
 
 def status_of(item: ScoredIncident) -> str:
     return case(item.incident.incident_id)["status"]
+
+
+def section(title: str, kind: str) -> None:
+    """Same kicker + heading used on every workspace and investigation tab."""
+    st.markdown(
+        f"<div class='zn-section'>"
+        f"<div class='zn-kind'>{kind}</div>"
+        f"<div class='zn-heading'>{title}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def extra_context(item: ScoredIncident) -> list[str]:
+    return context_badges(item)[3:]
+
+
+def render_priority_card(
+    item: ScoredIncident,
+    now: datetime,
+    *,
+    key_prefix: str,
+    switch: bool = False,
+    show_status: bool = True,
+) -> None:
+    pri = priority(item.risk.risk_score)
+    roles = incident_roles(item)
+    active = "active" if item.incident.incident_id == st.session_state.get("selected") else ""
+    status_bit = f" · {owner_of(item)} · {status_of(item)}" if show_status else f" · {owner_of(item)}"
+    st.markdown(
+        f"<div class='icard pri-{pri.lower()} {active}'>"
+        f"<div class='title'>{display(item.title, item)}</div>"
+        f"<div class='meta'>"
+        f"<span class='pri {pri.lower()}'>{pri}</span> "
+        f"Risk {item.risk.risk_score:.0f} · vendor {vendor_severity(item)} · "
+        f"{display(roles['affected_asset'], item)}{status_bit} · "
+        f"{fmt_age(item.incident.first_seen, now)}"
+        f"</div>"
+        f"<div class='urgency'>{display(urgency_sentence(item), item)}</div>"
+        f"<div class='meta'>Source {display(roles['source_host'], item)} · "
+        f"Dest {display(roles['destination'], item)}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    copyable_id(display(item.incident.incident_id, item), key=f"{key_prefix}-id-{item.incident.incident_id}")
+    render_badges(item, limit=3)
+    extra = extra_context(item)
+    if extra and not presenting():
+        with st.expander("More context"):
+            st.write(", ".join(extra))
+    if st.button("Open case", key=f"{key_prefix}-{item.incident.incident_id}", use_container_width=True):
+        open_case_view(item.incident.incident_id, switch=switch)
 
 
 def page_header(title: str, result: PipelineResult, *, lede: str) -> None:

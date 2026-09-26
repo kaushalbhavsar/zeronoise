@@ -8,8 +8,6 @@ import streamlit as st
 
 from console.case import render_case_workspace
 from console.common import (
-    classify,
-    copyable_id,
     defined_metric,
     display,
     empty_state,
@@ -21,8 +19,9 @@ from console.common import (
     priority,
     queue_filters,
     queue_metrics,
-    render_badges,
     render_load_error,
+    render_priority_card,
+    section,
     session_chrome,
     status_of,
     visible_incidents,
@@ -33,7 +32,7 @@ from console.state import (
     open_case_view,
     snapshot_now,
 )
-from engine.presentation import incident_roles, rank_delta, rank_delta_label, urgency_sentence, vendor_severity
+from engine.presentation import rank_delta, rank_delta_label
 from engine.schemas import PipelineResult, ScoredIncident
 
 
@@ -56,48 +55,12 @@ def render_featured_cards(items: list[ScoredIncident], now: datetime, signature:
     top = _frozen_featured(items, signature)
     if not top:
         return
-    st.subheader("Take next")
+    section("Take next", "Action")
     cols = st.columns(len(top), gap="medium")
-    last = st.session_state.get("selected")
+    mode = st.session_state.get("queue_mode", "ai")
     for col, item in zip(cols, top):
         with col:
-            pri = priority(item.risk.risk_score)
-            roles = incident_roles(item)
-            active = "active" if item.incident.incident_id == last else ""
-            st.markdown(
-                f"<div class='icard pri-{pri.lower()} {active}'>"
-                f"<div class='title'>{display(item.title, item)}</div>"
-                f"<div class='meta'>"
-                f"<span class='pri {pri.lower()}'>{pri}</span> "
-                f"Risk {item.risk.risk_score:.0f} · vendor {vendor_severity(item)} · "
-                f"{display(roles['affected_asset'], item)} · {owner_of(item)} · "
-                f"{status_of(item)} · {fmt_age(item.incident.first_seen, now)}"
-                f"</div>"
-                f"<div class='urgency'>{display(urgency_sentence(item), item)}</div>"
-                f"<div class='meta'>Source {display(roles['source_host'], item)} · "
-                f"Dest {display(roles['destination'], item)}</div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-            copyable_id(display(item.incident.incident_id, item), key=f"feat-id-{item.incident.incident_id}")
-            render_badges(item, limit=3)
-            extra = context_rest(item)
-            if extra:
-                with st.expander("More context"):
-                    st.write(", ".join(extra))
-            if st.button(
-                "Open case",
-                key=f"feat-{st.session_state.get('queue_mode', 'ai')}-{item.incident.incident_id}",
-                use_container_width=True,
-            ):
-                open_case_view(item.incident.incident_id)
-
-
-def context_rest(item: ScoredIncident) -> list[str]:
-    from engine.presentation import context_badges
-
-    names = context_badges(item)
-    return names[3:]
+            render_priority_card(item, now, key_prefix=f"feat-{mode}")
 
 
 def queue_rows(items: list[ScoredIncident], now: datetime, *, show_ranks: bool) -> list[dict]:
@@ -157,6 +120,10 @@ def render_queue_table(items: list[ScoredIncident], now: datetime, *, show_ranks
                 "Age",
                 help="Time since first_seen. No SLA deadline is recorded in this snapshot.",
             ),
+            "Risk": st.column_config.NumberColumn(
+                "Risk",
+                help="Incident risk score 0–100. Not vendor severity and not a confidence percentage.",
+            ),
             "_id": st.column_config.TextColumn("_id", width="small"),
         },
     )
@@ -215,7 +182,7 @@ def render_incident_queue(result: PipelineResult, visible: list[ScoredIncident],
         bool(filters["production_only"]),
     )
     render_featured_cards(visible, now, signature)
-    st.subheader("Working queue")
+    section("Working queue", "Observed")
     render_queue_table(visible, now, show_ranks=bool(filters["show_ranks"]))
     if not filters["show_ranks"]:
         st.caption("AI rank, legacy rank, and rank delta live under Detection intelligence, or enable them in More filters.")

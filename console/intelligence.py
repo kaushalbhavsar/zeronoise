@@ -11,10 +11,11 @@ from console.common import (
     page_header,
     primary_asset,
     render_load_error,
+    section,
     session_chrome,
     priority,
 )
-from console.state import PAGE_QUEUE, init_session, load_result_or_error, open_case_view
+from console.state import PAGE_QUEUE, init_session, load_result_or_error, open_case_view, presenting
 from engine.presentation import (
     METRIC_DEFINITIONS,
     rank_delta,
@@ -73,7 +74,7 @@ def render() -> None:
         "These are volume counts, not measured analyst-time savings."
     )
 
-    st.subheader("AI rank vs legacy rank")
+    section("AI rank vs legacy rank", "Comparison")
     st.caption("Significant change: absolute rank delta of 5 or more on this snapshot.")
     rows = []
     for item in result.risk_ranked:
@@ -102,7 +103,7 @@ def render() -> None:
     )
 
     moved = significant_rank_moves(result.risk_ranked, min_abs_delta=5)
-    st.subheader("Significant rank changes")
+    section("Significant rank changes", "Assessment")
     if not moved:
         st.info("No incident moved 5 or more positions between legacy and risk rank.")
     else:
@@ -138,32 +139,32 @@ def render() -> None:
             f"#{crown.risk_rank}. The legacy ranking used severity × volume only."
         )
 
-    left, right = st.columns(2)
-    with left:
-        st.subheader("Sensor coverage")
-        coverage = _sensor_rows(result.risk_ranked)
-        if coverage:
-            st.dataframe(coverage, width="stretch", hide_index=True, key="intel-sensors")
-            st.caption("Count of incidents that include at least one alert from that sensor. Not a coverage SLA.")
-        else:
-            st.info("No sensor labels are present on this snapshot.")
-    with right:
-        st.subheader("Correlation evidence")
-        with_edges = sum(1 for item in result.risk_ranked if item.incident.edges)
-        defined_metric("edges", "Incidents with inter-alert edges", with_edges)
-        st.metric(
-            "Single-alert incidents",
-            inc_n - with_edges,
-            help=METRIC_DEFINITIONS["incidents"] + " This count is incidents minus those with edges.",
-        )
-        st.caption("Edges are SHARED_HOST, SHARED_IDENTITY, attacker IP, pivots, and process hash.")
+    with st.expander("Sensor coverage, correlation, and scoring", expanded=not presenting()):
+        left, right = st.columns(2)
+        with left:
+            section("Sensor coverage", "Observed")
+            coverage = _sensor_rows(result.risk_ranked)
+            if coverage:
+                st.dataframe(coverage, width="stretch", hide_index=True, key="intel-sensors")
+                st.caption("Count of incidents that include at least one alert from that sensor. Not a coverage SLA.")
+            else:
+                st.info("No sensor labels are present on this snapshot.")
+        with right:
+            section("Correlation evidence", "Observed")
+            with_edges = sum(1 for item in result.risk_ranked if item.incident.edges)
+            defined_metric("edges", "Incidents with inter-alert edges", with_edges)
+            st.metric(
+                "Single-alert incidents",
+                inc_n - with_edges,
+                help=METRIC_DEFINITIONS["incidents"] + " This count is incidents minus those with edges.",
+            )
+            st.caption("Edges are SHARED_HOST, SHARED_IDENTITY, attacker IP, pivots, and process hash.")
 
-    st.subheader("How scoring works")
-    st.write(
-        "Risk is RawRisk = B × K × C, then mapped with a saturating curve. "
-        "Contribution percentages on a case are ablation shares — they are not confidence probabilities."
-    )
-    with st.expander("Scoring details"):
+        section("How scoring works", "Assessment")
+        st.write(
+            "Risk is RawRisk = B × K × C, then mapped with a saturating curve. "
+            "Contribution percentages on a case are ablation shares — they are not confidence probabilities."
+        )
         st.code(
             "fidelity_a = severity × confidence × (1 - 0.7 × FPR) × (1 + 0.10 × log1p(n-1))\n"
             "B = min(Σ fidelity_a over unique (rule, tactic), 35)\n"

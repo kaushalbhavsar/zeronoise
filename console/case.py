@@ -18,6 +18,7 @@ from console.common import (
     primary_user,
     priority,
     render_badges,
+    section,
     severity_token,
 )
 from console.state import (
@@ -49,6 +50,30 @@ from engine.presentation import (
     why_this_matters,
 )
 from engine.schemas import IncidentCard, ScoredIncident
+
+
+def render_context_strip(item: ScoredIncident) -> None:
+    roles = incident_roles(item)
+    st.write(
+        f"Initial identity: {display(roles['initial_identity'], item)}  \n"
+        f"Privileged identity: {display(roles['privileged_identity'], item)}  \n"
+        f"Source host: {display(roles['source_host'], item)}  \n"
+        f"Affected destination: {display(roles['destination'], item)}  \n"
+        f"Title asset (same as queue): {display(roles['affected_asset'], item)}"
+    )
+
+
+def render_session_activity(record: dict) -> None:
+    history = record.get("history") or []
+    with st.expander("Session activity", expanded=False):
+        if history:
+            for event in history:
+                st.caption(
+                    f"{event['at']} · {event['actor']} · {event['field']}: "
+                    f"{event['old']} → {event['new']}"
+                )
+        else:
+            st.caption("No case changes in this session. History is not invented.")
 
 
 def driver_chart(card: IncidentCard) -> go.Figure:
@@ -170,29 +195,24 @@ def render_case_header(item: ScoredIncident, card: IncidentCard, now: datetime) 
                 record["close_reason"] = str(reason).strip()
                 persist_status(item.incident.incident_id, "Closed — true positive")
                 st.rerun()
+    render_session_activity(record)
 
 
 def render_decision_brief(item: ScoredIncident, card: IncidentCard) -> None:
-    st.subheader("Decision brief")
-    roles = incident_roles(item)
-    exposed = (
-        f"Initial identity: {roles['initial_identity']}\n"
-        f"Privileged identity: {roles['privileged_identity']}\n"
-        f"Source host: {roles['source_host']}\n"
-        f"Affected destination: {roles['destination']}\n"
-        f"Title asset (same as queue): {roles['affected_asset']}"
-    )
+    section("Decision brief", "Assessment")
     blocks = [
         ("What happened?", "Observed", display(card.executive_summary, item)),
-        ("What is exposed?", "Observed", display(exposed, item)),
+        ("What is exposed?", "Observed", None),
         ("Why does this matter?", "Assessment", display(why_this_matters(item), item)),
         ("What evidence supports the assessment?", "Observed", display(evidence_summary(item), item)),
         ("What should happen next?", "Recommended", display(next_recommended_action(card), item)),
     ]
     for title, kind, body in blocks:
-        st.markdown(f"**{title}**")
-        st.caption(kind)
-        st.write(body)
+        section(title, kind)
+        if body is None:
+            render_context_strip(item)
+        else:
+            st.write(body)
     if card.why_not_false_positive:
         st.caption(f"Uncertainty: {display(card.why_not_false_positive, item)}")
     if not presenting():
@@ -211,7 +231,7 @@ def render_overview_tab(item: ScoredIncident, card: IncidentCard) -> None:
         return
     left, right = st.columns(2)
     with left:
-        st.markdown("**Affected identities**")
+        section("Affected identities", "Observed")
         if card.identities:
             st.dataframe(
                 [
@@ -229,7 +249,7 @@ def render_overview_tab(item: ScoredIncident, card: IncidentCard) -> None:
         else:
             st.write(primary_user(item))
     with right:
-        st.markdown("**Affected assets**")
+        section("Affected assets", "Observed")
         if card.assets:
             st.dataframe(
                 [
@@ -253,6 +273,8 @@ def render_overview_tab(item: ScoredIncident, card: IncidentCard) -> None:
 
 
 def render_timeline_tab(item: ScoredIncident, card: IncidentCard) -> None:
+    section("Chronology", "Observed")
+    st.caption("Each row is a cited detection. Color is not the only cue: tactic and time are labeled.")
     alerts_by_id = {alert.alert_id: alert for alert in item.incident.alerts}
     st.markdown("<div class='tl'>", unsafe_allow_html=True)
     for line in card.attack_timeline:
@@ -296,13 +318,14 @@ def render_timeline_tab(item: ScoredIncident, card: IncidentCard) -> None:
 
 
 def render_attack_tab(item: ScoredIncident, card: IncidentCard) -> None:
+    section("ATT&CK path", "Observed")
     present = set(card.tactics)
     observed = [name for name in KILL_CHAIN if name in present]
     if observed:
         st.caption("Observed path: " + " → ".join(observed))
     else:
         st.caption("No mapped ATT&CK stages on this incident.")
-    st.caption("Full stage names are listed below. Highlighted rows were observed; muted rows were not.")
+    st.caption("Observed stages are labeled. Unobserved stages are listed on demand and are not implied.")
 
     unobserved: list[str] = []
     for index, stage in enumerate(KILL_CHAIN, start=1):
@@ -332,7 +355,7 @@ def render_attack_tab(item: ScoredIncident, card: IncidentCard) -> None:
                 st.caption(line)
 
     techniques = item.incident.unique_techniques or card.techniques
-    st.markdown("**MITRE techniques**")
+    section("MITRE techniques", "Observed")
     if techniques:
         for technique in techniques:
             st.write(f"- {technique}")
@@ -341,6 +364,11 @@ def render_attack_tab(item: ScoredIncident, card: IncidentCard) -> None:
 
 
 def render_risk_tab(item: ScoredIncident, card: IncidentCard) -> None:
+    section("Why this score", "Assessment")
+    st.caption(
+        f"Risk {item.risk.risk_score:.0f} is not vendor severity ({vendor_severity(item)}) "
+        "and is not a confidence percentage."
+    )
     left, right = st.columns([1.15, 0.85])
     with left:
         st.plotly_chart(
@@ -378,6 +406,7 @@ def render_risk_tab(item: ScoredIncident, card: IncidentCard) -> None:
 def render_response_tab(item: ScoredIncident, card: IncidentCard) -> None:
     record = case(item.incident.incident_id)
     recommended = card.recommended_actions or card.containment
+    section("Recommended work", "Recommended")
     st.caption(
         "Checking a box records that the task was completed in this case file. "
         "It does not execute an infrastructure action."
@@ -409,26 +438,23 @@ def render_response_tab(item: ScoredIncident, card: IncidentCard) -> None:
     )
     if st.button("Save notes", key=f"save-notes-{item.incident.incident_id}"):
         persist_notes(item.incident.incident_id, notes)
-    history = record.get("history") or []
-    st.markdown("**Session activity**")
-    if history:
-        for event in history:
-            st.caption(
-                f"{event['at']} · {event['actor']} · {event['field']}: "
-                f"{event['old']} → {event['new']}"
-            )
-    else:
-        st.caption("No case changes in this session. History is not invented.")
+    st.caption("Session activity is in the case header. It only lists changes saved in this session.")
 
 
 def render_evidence_tab(item: ScoredIncident, card: IncidentCard) -> None:
     facts = observable_evidence(item)
+    section("Incident context", "Observed")
+    render_context_strip(item)
     st.caption(
-        "Evidence is the observed artifacts and detections. Alert IDs are citations. "
-        "This tab does not invent packet captures, file contents, or business impact."
+        "Same identities and assets as the queue title and decision brief. "
+        "Vendor severity on a detection is not the incident risk score, and there is no incident-level confidence %."
     )
 
-    st.markdown("**Detections**")
+    section("Detections", "Observed")
+    st.caption(
+        "Evidence is what sensors reported. Alert IDs are citations. "
+        "This tab does not invent packet captures, file contents, or business impact."
+    )
     if facts["detections"]:
         st.dataframe(
             [
@@ -455,86 +481,87 @@ def render_evidence_tab(item: ScoredIncident, card: IncidentCard) -> None:
     else:
         st.caption("No detections were attached to this incident.")
 
-    left, right = st.columns(2)
-    with left:
-        st.markdown("**Identities**")
-        if facts["identities"]:
-            st.dataframe(
-                [
-                    {
-                        "Identity": display(str(row["identity"]), item),
-                        "Privilege": row["privilege"],
-                        "Department": row["department"],
-                        "Sensors": row["sensors"],
-                        "Tactics": row["tactics"],
-                    }
-                    for row in facts["identities"]
-                ],
-                width="stretch",
-                hide_index=True,
-                key=f"evidence-idents-{item.incident.incident_id}",
-            )
-        else:
-            st.caption("No identity was resolved on these events.")
-        st.markdown("**Hosts**")
-        if facts["hosts"]:
-            st.dataframe(
-                [
-                    {
-                        "Host": display(str(row["host"]), item),
-                        "Hostname": display(str(row["hostname"]), item),
-                        "Environment": row["environment"],
-                        "Data": row["data"],
-                        "Crit": row["criticality"],
-                        "Role": row["roles"],
-                        "Sensors": row["sensors"],
-                    }
-                    for row in facts["hosts"]
-                ],
-                width="stretch",
-                hide_index=True,
-                key=f"evidence-hosts-{item.incident.incident_id}",
-            )
-        else:
-            st.caption("No host was resolved on these events.")
-    with right:
-        st.markdown("**Network**")
-        if facts["network"]:
-            st.dataframe(
-                [
-                    {
-                        "Direction": row["direction"],
-                        "IP": display(str(row["ip"]), item),
-                        "Sensors": row["sensors"],
-                        "CMDB": row["gaps"],
-                    }
-                    for row in facts["network"]
-                ],
-                width="stretch",
-                hide_index=True,
-                key=f"evidence-net-{item.incident.incident_id}",
-            )
-        else:
-            st.caption("No source or destination IP was present on these events.")
-        st.markdown("**Process hashes**")
-        if facts["hashes"]:
-            st.dataframe(
-                [
-                    {
-                        "Hash": display(str(row["hash"]), item),
-                        "Sensors": row["sensors"],
-                        "Rules": display(str(row["rules"]), item),
-                    }
-                    for row in facts["hashes"]
-                ],
-                width="stretch",
-                hide_index=True,
-                key=f"evidence-hash-{item.incident.incident_id}",
-            )
-        else:
-            st.caption("No process hash was present on these events.")
+    with st.expander("Identities, hosts, network, and hashes", expanded=not presenting()):
+        left, right = st.columns(2)
+        with left:
+            st.markdown("**Identities**")
+            if facts["identities"]:
+                st.dataframe(
+                    [
+                        {
+                            "Identity": display(str(row["identity"]), item),
+                            "Privilege": row["privilege"],
+                            "Department": row["department"],
+                            "Sensors": row["sensors"],
+                            "Tactics": row["tactics"],
+                        }
+                        for row in facts["identities"]
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                    key=f"evidence-idents-{item.incident.incident_id}",
+                )
+            else:
+                st.caption("No identity was resolved on these events.")
+            st.markdown("**Hosts**")
+            if facts["hosts"]:
+                st.dataframe(
+                    [
+                        {
+                            "Host": display(str(row["host"]), item),
+                            "Hostname": display(str(row["hostname"]), item),
+                            "Environment": row["environment"],
+                            "Data": row["data"],
+                            "Crit": row["criticality"],
+                            "Role": row["roles"],
+                            "Sensors": row["sensors"],
+                        }
+                        for row in facts["hosts"]
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                    key=f"evidence-hosts-{item.incident.incident_id}",
+                )
+            else:
+                st.caption("No host was resolved on these events.")
+        with right:
+            st.markdown("**Network**")
+            if facts["network"]:
+                st.dataframe(
+                    [
+                        {
+                            "Direction": row["direction"],
+                            "IP": display(str(row["ip"]), item),
+                            "Sensors": row["sensors"],
+                            "CMDB": row["gaps"],
+                        }
+                        for row in facts["network"]
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                    key=f"evidence-net-{item.incident.incident_id}",
+                )
+            else:
+                st.caption("No source or destination IP was present on these events.")
+            st.markdown("**Process hashes**")
+            if facts["hashes"]:
+                st.dataframe(
+                    [
+                        {
+                            "Hash": display(str(row["hash"]), item),
+                            "Sensors": row["sensors"],
+                            "Rules": display(str(row["rules"]), item),
+                        }
+                        for row in facts["hashes"]
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                    key=f"evidence-hash-{item.incident.incident_id}",
+                )
+            else:
+                st.caption("No process hash was present on these events.")
 
-    st.markdown("**How the events are linked**")
+    section("How the events are linked", "Observed")
     links = link_evidence(item)
     if links:
         st.dataframe(
