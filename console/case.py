@@ -21,6 +21,7 @@ from console.common import (
     section,
     severity_token,
 )
+from console.export import case_markdown, case_pdf, export_filenames
 from console.state import (
     ASSIGNEES,
     back_to_queue,
@@ -195,7 +196,44 @@ def render_case_header(item: ScoredIncident, card: IncidentCard, now: datetime) 
                 record["close_reason"] = str(reason).strip()
                 persist_status(item.incident.incident_id, "Closed — true positive")
                 st.rerun()
+        render_case_export(item, card, record, now)
     render_session_activity(record)
+
+
+def render_case_export(
+    item: ScoredIncident,
+    card: IncidentCard,
+    record: dict,
+    now: datetime,
+) -> None:
+    mask = presenting()
+    with st.popover("Export"):
+        st.caption(
+            "Downloads the open case: decision brief, chronology, ATT&CK, score, "
+            "recommended work, detections, and saved session fields. "
+            "The file is prepared here; nothing is sent to another system."
+        )
+        markdown = case_markdown(item, card, record, now, mask=mask)
+        pdf = case_pdf(markdown)
+        names = export_filenames(item, mask=mask)
+        st.download_button(
+            "Download Markdown",
+            data=markdown,
+            file_name=names["md"],
+            mime="text/markdown",
+            key=f"export-md-{item.incident.incident_id}",
+        )
+        st.download_button(
+            "Download PDF",
+            data=pdf,
+            file_name=names["pdf"],
+            mime="application/pdf",
+            key=f"export-pdf-{item.incident.incident_id}",
+        )
+        if mask:
+            st.caption("Presentation mode is on, so identifiers in the file are masked. Masking is not access control.")
+        else:
+            st.caption("Turn on presentation mode before export if you need identifiers masked for screen sharing.")
 
 
 def render_decision_brief(item: ScoredIncident, card: IncidentCard) -> None:
