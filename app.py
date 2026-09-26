@@ -161,7 +161,7 @@ st.markdown(
 
 
 @st.cache_data(show_spinner="Loading incident queue…")
-def load_result(cache_version: int = 6) -> PipelineResult:
+def load_result(cache_version: int = 4) -> PipelineResult:
     if not ALERTS_PATH.exists():
         from data.generate_synthetic_data import write_dataset
 
@@ -622,28 +622,66 @@ def render_case_header(item: ScoredIncident, card: IncidentCard, now: datetime) 
     )
 
 
-def render_overview_tab(item: ScoredIncident, card: IncidentCard) -> None:
-    st.markdown("**Executive summary**")
-    st.write(card.executive_summary)
-    if card.contrastive_explanation or card.contrastive:
-        st.markdown("**Why the legacy SIEM got this wrong**")
-        st.write(card.contrastive_explanation or card.contrastive)
-    if card.why_not_false_positive:
-        st.markdown("**Why this may be real rather than noise**")
-        st.write(card.why_not_false_positive)
-    left, right = st.columns(2)
-    with left:
-        st.markdown("**Affected identities**")
-        if card.identities:
-            st.dataframe(
-                [
-                    {
-                        "User": ident.user_id,
-                        "Department": ident.department,
-                        "Privilege": ident.privilege_tier,
-                    }
-                    for ident in card.identities
-                ],
+    st.caption("Case file — expand a section to drill in.")
+
+    with st.expander("Executive Summary", expanded=True):
+        st.write(card.executive_summary)
+        if card.contrastive_explanation or card.contrastive:
+            st.markdown("**Why the legacy SIEM got this wrong**")
+            st.write(card.contrastive_explanation or card.contrastive)
+        if card.why_not_false_positive:
+            st.markdown("**Why this may be real rather than noise**")
+            st.write(card.why_not_false_positive)
+        st.caption(f"Sensors: {', '.join(card.products) or '—'}  ·  Class: {classify(item)}")
+
+    with timeline:
+        st.markdown("**How the attack evolved**")
+        late = {"Exfiltration", "Impact", "Lateral Movement", "Credential Access"}
+        for line in card.attack_timeline:
+            late_cls = "tl-late" if any(tactic in line for tactic in late) else ""
+            st.markdown(
+                f"<div class='tl-line {late_cls}'>{_format_timeline_line(line)}</div>",
+                unsafe_allow_html=True,
+            )
+        st.markdown(kill_chain_html(card.tactics), unsafe_allow_html=True)
+        rows = [
+            {
+                "Alert": alert.alert_id,
+                "Start": fmt_ts(alert.first_seen or alert.timestamp),
+                "End": fmt_ts(alert.last_seen or alert.timestamp),
+                "Sensor": alert.source_product,
+                "Sev": alert.severity_raw,
+                "Tactic": alert.mitre_tactic,
+                "Rule": alert.rule_name,
+                "Events": alert.event_count,
+                "User": alert.entities.user_id or "—",
+                "Host": alert.entities.host_id or "—",
+            }
+            for alert in item.incident.alerts
+        ]
+        st.dataframe(
+            rows,
+            width="stretch",
+            hide_index=True,
+            key=f"timeline-alerts-{item.incident.incident_id}",
+        )
+
+    with attack:
+        st.plotly_chart(
+            kill_chain_figure(card.tactics, chart_id=f"attack-{item.incident.incident_id}"),
+            width="stretch",
+            key=f"kill-chain-attack-{item.incident.incident_id}",
+        )
+        st.write(" → ".join(card.tactics) if card.tactics else "No mapped tactics.")
+        st.markdown("**Techniques**")
+        for technique in item.incident.unique_techniques:
+            st.write(f"- {technique}")
+
+    with risk:
+        left, right = st.columns([1.1, 0.9])
+        with left:
+            st.plotly_chart(
+                driver_chart(card),
                 width="stretch",
                 hide_index=True,
                 key=f"idents-{item.incident.incident_id}",
