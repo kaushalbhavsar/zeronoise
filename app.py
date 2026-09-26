@@ -118,7 +118,7 @@ st.markdown(
 
 
 @st.cache_data(show_spinner="Loading incident queue…")
-def load_result() -> PipelineResult:
+def load_result(cache_version: int = 3) -> PipelineResult:
     if not ALERTS_PATH.exists():
         from data.generate_synthetic_data import write_dataset
 
@@ -522,7 +522,11 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
                 f"<div class='tl-line {late_cls}'>{_format_timeline_line(line)}</div>",
                 unsafe_allow_html=True,
             )
-        st.plotly_chart(kill_chain_figure(card.tactics), width="stretch")
+        st.plotly_chart(
+            kill_chain_figure(card.tactics),
+            width="stretch",
+            key=f"kill-chain-timeline-{item.incident.incident_id}",
+        )
         rows = [
             {
                 "Alert": alert.alert_id,
@@ -538,10 +542,19 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
             }
             for alert in item.incident.alerts
         ]
-        st.dataframe(rows, width="stretch", hide_index=True)
+        st.dataframe(
+            rows,
+            width="stretch",
+            hide_index=True,
+            key=f"timeline-alerts-{item.incident.incident_id}",
+        )
 
     with attack:
-        st.plotly_chart(kill_chain_figure(card.tactics), width="stretch")
+        st.plotly_chart(
+            kill_chain_figure(card.tactics),
+            width="stretch",
+            key=f"kill-chain-attack-{item.incident.incident_id}",
+        )
         st.write(" → ".join(card.tactics) if card.tactics else "No mapped tactics.")
         st.markdown("**Techniques**")
         for technique in item.incident.unique_techniques:
@@ -550,7 +563,11 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
     with risk:
         left, right = st.columns([1.1, 0.9])
         with left:
-            st.plotly_chart(driver_chart(card), width="stretch")
+            st.plotly_chart(
+                driver_chart(card),
+                width="stretch",
+                key=f"risk-drivers-{item.incident.incident_id}",
+            )
         with right:
             st.markdown("**Why is it ranked here?**")
             for driver in driver_rows(card):
