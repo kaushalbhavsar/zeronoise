@@ -106,6 +106,8 @@ def case_pdf(markdown: str) -> bytes:
             if y < bottom:
                 new_page()
             continue
+        if line.startswith("```"):
+            continue
         if line.startswith("# "):
             y -= 8
             for part in wrap_line(line[2:], 16):
