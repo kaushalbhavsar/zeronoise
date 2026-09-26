@@ -130,11 +130,13 @@ def run_pipeline(
     }
 
     scanner = _find_by_scenario(scored, "noisy_scanner")
+    breach = _find_by_scenario(scored, "true_breach")
     cards = explain_incidents(
         risk_ranked,
         risk_ranks=risk_ranks,
         legacy_ranks=legacy_ranks,
         contrast_target=scanner,
+        contrast_fallback=breach,
         use_llm=use_llm,
     )
     metrics = compute_metrics(

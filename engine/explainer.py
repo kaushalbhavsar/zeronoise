@@ -160,7 +160,7 @@ def contrastive_explanation(
     scored: ScoredIncident,
     other: ScoredIncident | None,
 ) -> str | None:
-    if other is None:
+    if other is None or other.incident.incident_id == scored.incident.incident_id:
         return None
     a, b = scored, other
     a_events = a.incident.total_event_count
@@ -173,11 +173,19 @@ def contrastive_explanation(
         f"{a.incident.incident_id} has {a_events} raw events versus "
         f"{b.incident.incident_id} with {b_events}."
     )
+    if a.risk.risk_score >= b.risk.risk_score:
+        relation = (
+            f"{a.incident.incident_id} outranks {b.incident.incident_id} on risk "
+            f"({a.risk.risk_score:.1f} vs {b.risk.risk_score:.1f})"
+        )
+    else:
+        relation = (
+            f"{a.incident.incident_id} ranks below {b.incident.incident_id} on risk "
+            f"({a.risk.risk_score:.1f} vs {b.risk.risk_score:.1f})"
+        )
     return (
-        f"{a.incident.incident_id} outranks {b.incident.incident_id} on risk "
-        f"({a.risk.risk_score:.1f} vs {b.risk.risk_score:.1f}) because "
-        f"business impact is {a_impact:.2f} vs {b_impact:.2f} and attack "
-        f"progression is {a_prog:.2f} vs {b_prog:.2f}. {volume_note} "
+        f"{relation} because business impact is {a_impact:.2f} vs {b_impact:.2f} "
+        f"and attack progression is {a_prog:.2f} vs {b_prog:.2f}. {volume_note} "
         "Raw volume and vendor Critical labels are not sufficient to win the queue."
     )
 
@@ -332,15 +340,21 @@ def explain_incidents(
     risk_ranks: dict[str, int] | None = None,
     legacy_ranks: dict[str, int] | None = None,
     contrast_target: ScoredIncident | None = None,
+    contrast_fallback: ScoredIncident | None = None,
     use_llm: bool | None = None,
 ) -> list[IncidentCard]:
     cards: list[IncidentCard] = []
     scored_list = list(scored)
     apply_llm = LLM_ENABLED if use_llm is None else use_llm
     for item in scored_list:
+        other = contrast_target
+        if other is None or other.incident.incident_id == item.incident.incident_id:
+            other = contrast_fallback
+        if other is not None and other.incident.incident_id == item.incident.incident_id:
+            other = None
         card = build_card(
             item,
-            contrast_with=contrast_target,
+            contrast_with=other,
             risk_rank=(risk_ranks or {}).get(item.incident.incident_id),
             legacy_rank=(legacy_ranks or {}).get(item.incident.incident_id),
         )

@@ -88,3 +88,20 @@ def test_llm_enhancement_cannot_mutate_scores_or_entities() -> None:
     assert [c.risk_score for c in cards] == [i.risk.risk_score for i in result.risk_ranked]
     assert cards[0].alert_ids == original.alert_ids
     assert cards[0].risk.drivers == original.risk.drivers
+
+
+def test_contrastive_text_never_compares_an_incident_to_itself() -> None:
+    result = _pipeline()
+    scanner = next(
+        card
+        for card in result.cards
+        if card.risk_rank == result.metrics.noisy_scanner_risk_rank
+    )
+    breach = result.cards[0]
+    assert scanner.contrastive
+    assert breach.incident_id in (scanner.contrastive or "")
+    assert scanner.incident_id != breach.incident_id
+    assert "ranks below" in (scanner.contrastive or "")
+    assert breach.contrastive
+    assert scanner.incident_id in (breach.contrastive or "")
+    assert "outranks" in (breach.contrastive or "")
