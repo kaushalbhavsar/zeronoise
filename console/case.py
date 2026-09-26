@@ -105,7 +105,12 @@ def driver_chart(card: IncidentCard) -> go.Figure:
     return fig
 
 
-def render_case_header(item: ScoredIncident, card: IncidentCard, now: datetime) -> None:
+def render_case_header(
+    item: ScoredIncident,
+    card: IncidentCard,
+    now: datetime,
+    peers: list[ScoredIncident] | None = None,
+) -> None:
     record = case(item.incident.incident_id)
     pri = priority(item.risk.risk_score)
     next_action = primary_next_action(item)
@@ -169,7 +174,7 @@ def render_case_header(item: ScoredIncident, card: IncidentCard, now: datetime) 
         if st.button("Save owner", key=f"save-owner-{item.incident.incident_id}"):
             persist_owner(item.incident.incident_id, chosen)
     with tools:
-        render_case_export(item, card, record, now)
+        render_case_export(item, card, record, now, peers=peers)
         with st.popover("Resolve"):
             st.write("Closing a case requires a recorded outcome. This does not delete source alerts.")
             reason = st.text_area(
@@ -198,15 +203,16 @@ def render_case_export(
     card: IncidentCard,
     record: dict,
     now: datetime,
+    peers: list[ScoredIncident] | None = None,
 ) -> None:
     mask = presenting()
     with st.popover("Export"):
         st.caption(
-            "Downloads the open case: decision brief, chronology, ATT&CK, score, "
-            "recommended work, detections, and saved session fields. "
+            "Downloads a decision-first incident report: brief, entities, timeline, "
+            "ranking, recommended work, and a technical appendix. "
             "The file is prepared here; nothing is sent to another system."
         )
-        markdown = case_markdown(item, card, record, now, mask=mask)
+        markdown = case_markdown(item, card, record, now, mask=mask, peers=peers)
         pdf = case_pdf(markdown)
         names = export_filenames(item, mask=mask)
         st.download_button(
@@ -609,7 +615,7 @@ def render_case_workspace(
             back_to_queue()
             st.rerun()
         return
-    render_case_header(item, card, now)
+    render_case_header(item, card, now, peers=list(by_id.values()))
     case_tabs = st.tabs(
         ["Overview", "Timeline", "ATT&CK", "Risk", "Response", "Evidence"]
     )

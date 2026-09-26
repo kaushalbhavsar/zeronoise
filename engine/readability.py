@@ -24,6 +24,7 @@ _PLACEHOLDER_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b\d{4}-\d{2}-\d{2}T[0-9:.+-]+\b"), "TIME"),
     (re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?(?:\s*UTC)?\b"), "TIME"),
     (re.compile(r"ATT&CK"), "ATTACK"),
+    (re.compile(r"\bZeroNoise\b"), "APP"),
 )
 
 # Security terms must stay in the published text. For scoring only they
@@ -147,6 +148,7 @@ def _syllables(word: str) -> int:
         "address",
         "technique",
         "rule",
+        "app",
     }:
         return 1
     if len(token) <= 3:
