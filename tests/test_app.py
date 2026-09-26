@@ -59,6 +59,9 @@ def test_opening_case_replaces_queue_with_workspace() -> None:
     labels = [button.label for button in at.button]
     assert any("Back to queue" in label for label in labels)
     assert "Open case" not in labels
+    downloads = [item.label for item in at.download_button]
+    assert "Download Markdown" in downloads
+    assert "Download PDF" in downloads
     assert [tab.label for tab in at.tabs] == [
         "Overview",
         "Timeline",
