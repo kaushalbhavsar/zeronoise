@@ -111,6 +111,12 @@ st.markdown(
     .tl-time { color: #8fa2b8; }
     .tl-id { color: #c5d2e0; }
     .tl-tactic { color: #ffd089; }
+    .kc { display: flex; gap: 0.28rem; flex-wrap: wrap; margin: 0.45rem 0 0.7rem 0; }
+    .kc-step {
+        flex: 1 1 6.5rem; text-align: center; font-size: 0.68rem; padding: 0.28rem 0.2rem;
+        border: 1px solid #1c2736; border-radius: 4px; color: #6d8094; background: #0c121b;
+    }
+    .kc-step.on { border-color: #6b2a2a; color: #ffd0d0; background: #2a1212; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -118,7 +124,7 @@ st.markdown(
 
 
 @st.cache_data(show_spinner="Loading incident queue…")
-def load_result() -> PipelineResult:
+def load_result(cache_version: int = 4) -> PipelineResult:
     if not ALERTS_PATH.exists():
         from data.generate_synthetic_data import write_dataset
 
@@ -232,7 +238,16 @@ def set_status(incident_id: str, status: str) -> None:
         record["assignee"] = "You"
 
 
-def kill_chain_figure(tactics: list[str]) -> go.Figure:
+def kill_chain_html(tactics: list[str]) -> str:
+    present = set(tactics)
+    cells = "".join(
+        f"<div class='kc-step {'on' if name in present else ''}'>{name}</div>"
+        for name in KILL_CHAIN
+    )
+    return f"<div class='kc'>{cells}</div>"
+
+
+def kill_chain_figure(tactics: list[str], *, chart_id: str) -> go.Figure:
     present = set(tactics)
     colors = ["#6b2a2a" if name in present else "#1a2430" for name in KILL_CHAIN]
     fig = go.Figure(
@@ -256,6 +271,9 @@ def kill_chain_figure(tactics: list[str]) -> go.Figure:
         xaxis=dict(tickangle=-28),
         bargap=0.12,
         showlegend=False,
+        # Baked into the Plotly spec so Streamlit cannot assign two charts
+        # the same auto-generated ID even if a caller forgets a unique key.
+        meta={"chart_id": chart_id},
     )
     return fig
 
@@ -300,6 +318,7 @@ def driver_chart(card: IncidentCard) -> go.Figure:
             range=[0, max(42, max(d.contribution_pct for d in drivers) + 8)],
         ),
         yaxis=dict(autorange="reversed"),
+        meta={"chart_id": f"drivers-{card.incident_id}"},
     )
     return fig
 
@@ -522,7 +541,7 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
                 f"<div class='tl-line {late_cls}'>{_format_timeline_line(line)}</div>",
                 unsafe_allow_html=True,
             )
-        st.plotly_chart(kill_chain_figure(card.tactics), width="stretch")
+        st.markdown(kill_chain_html(card.tactics), unsafe_allow_html=True)
         rows = [
             {
                 "Alert": alert.alert_id,
@@ -538,10 +557,19 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
             }
             for alert in item.incident.alerts
         ]
-        st.dataframe(rows, width="stretch", hide_index=True)
+        st.dataframe(
+            rows,
+            width="stretch",
+            hide_index=True,
+            key=f"timeline-alerts-{item.incident.incident_id}",
+        )
 
     with attack:
-        st.plotly_chart(kill_chain_figure(card.tactics), width="stretch")
+        st.plotly_chart(
+            kill_chain_figure(card.tactics, chart_id=f"attack-{item.incident.incident_id}"),
+            width="stretch",
+            key=f"kill-chain-attack-{item.incident.incident_id}",
+        )
         st.write(" → ".join(card.tactics) if card.tactics else "No mapped tactics.")
         st.markdown("**Techniques**")
         for technique in item.incident.unique_techniques:
@@ -550,7 +578,11 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
     with risk:
         left, right = st.columns([1.1, 0.9])
         with left:
-            st.plotly_chart(driver_chart(card), width="stretch")
+            st.plotly_chart(
+                driver_chart(card),
+                width="stretch",
+                key=f"risk-drivers-{item.incident.incident_id}",
+            )
         with right:
             st.markdown("**Why is it ranked here?**")
             for driver in driver_rows(card):
@@ -613,6 +645,7 @@ def render_workbench(item: ScoredIncident, card: IncidentCard, now: datetime) ->
                 ],
                 width="stretch",
                 hide_index=True,
+                key=f"evidence-edges-{item.incident.incident_id}",
             )
 
 
