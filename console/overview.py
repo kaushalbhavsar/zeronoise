@@ -6,7 +6,9 @@ import streamlit as st
 
 from console.common import (
     classify,
-    demo_admin_controls,
+    defined_metric,
+    display,
+    empty_state,
     env_of,
     fmt_age,
     owner_of,
@@ -15,6 +17,8 @@ from console.common import (
     priority,
     queue_metrics,
     render_badges,
+    render_load_error,
+    session_chrome,
     status_of,
 )
 from console.state import (
@@ -22,11 +26,11 @@ from console.state import (
     PAGE_QUEUE,
     case,
     init_session,
-    load_result,
+    load_result_or_error,
     open_case_view,
     snapshot_now,
 )
-from engine.presentation import review_reduction_label, urgency_sentence
+from engine.presentation import incident_roles, review_reduction_label, urgency_sentence, vendor_severity
 from engine.schemas import ScoredIncident
 
 
@@ -82,7 +86,12 @@ def _progress_rows(result) -> list[dict]:
 
 
 def render() -> None:
-    result = load_result()
+    result, error = load_result_or_error()
+    if result is None:
+        render_load_error(error or "Unknown load failure")
+        return
+    if st.query_params.get("case"):
+        st.switch_page(PAGE_QUEUE)
     init_session(result)
     now = snapshot_now(result)
     page_header(
@@ -96,37 +105,24 @@ def render() -> None:
 
     with st.sidebar:
         st.caption("Same snapshot as the queue and detection workspaces.")
-        demo_admin_controls()
+        session_chrome()
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(
-        f"<div class='zn-metric'><div class='n'>{metrics['open']}</div>"
-        f"<div class='l'>Open incidents</div>"
-        f"<div class='h'>Of {inc_n} correlated cases</div></div>",
-        unsafe_allow_html=True,
-    )
-    c2.markdown(
-        f"<div class='zn-metric'><div class='n'>{metrics['p0_p1']}</div>"
-        f"<div class='l'>P0–P1 open</div>"
-        f"<div class='h'>Priority from risk score, not vendor severity</div></div>",
-        unsafe_allow_html=True,
-    )
-    c3.markdown(
-        f"<div class='zn-metric'><div class='n'>{metrics['prod']}</div>"
-        f"<div class='l'>Open in production</div>"
-        f"<div class='h'>Production is scope, not a healthy state</div></div>",
-        unsafe_allow_html=True,
-    )
-    c4.markdown(
-        f"<div class='zn-metric'><div class='n'>{metrics['unacked']}</div>"
-        f"<div class='l'>Unacknowledged</div>"
-        f"<div class='h'>{metrics['assigned']} assigned of {metrics['open']} open</div></div>",
-        unsafe_allow_html=True,
-    )
+    with c1:
+        defined_metric("open", "Open incidents", metrics["open"])
+    with c2:
+        defined_metric("p0_p1", "P0–P1 open", metrics["p0_p1"])
+    with c3:
+        defined_metric("prod", "Open in production", metrics["prod"])
+    with c4:
+        defined_metric("unacked", "Unacknowledged", metrics["unacked"])
     st.caption(
         f"{review_reduction_label(raw_n, inc_n)}: {raw_n} raw alerts collapsed to {inc_n} incidents. "
-        "That is a volume count, not measured time saved."
+        "That is a volume count, not measured time saved. "
+        "These four metrics are organization-wide, not queue-filtered."
     )
+    with st.expander("Metric definitions"):
+        st.write("Each metric help text states scope, time window, and calculation. Hover a metric label for the same definition.")
 
     st.subheader("Highest-priority incidents")
     urgent = [
@@ -136,19 +132,21 @@ def render() -> None:
         and priority(item.risk.risk_score) in {"P0", "P1"}
     ][:2]
     if not urgent:
-        st.info("No open P0 or P1 incidents in this snapshot.")
+        empty_state("no_p0", action="Open the incident queue to review remaining cases.")
     else:
         cols = st.columns(len(urgent), gap="medium")
         for col, item in zip(cols, urgent):
             with col:
                 pri = priority(item.risk.risk_score)
+                roles = incident_roles(item)
                 st.markdown(
                     f"<div class='icard pri-{pri.lower()}'>"
-                    f"<div class='title'>{item.title}</div>"
+                    f"<div class='title'>{display(item.title, item)}</div>"
                     f"<div class='meta'><span class='pri {pri.lower()}'>{pri}</span> "
-                    f"Risk {item.risk.risk_score:.0f} · {primary_asset(item)} · {owner_of(item)}</div>"
-                    f"<div class='urgency'>{urgency_sentence(item)}</div>"
-                    f"<div class='id'>{item.incident.incident_id}</div>"
+                    f"Risk {item.risk.risk_score:.0f} · vendor {vendor_severity(item)} · "
+                    f"{display(roles['affected_asset'], item)} · {owner_of(item)}</div>"
+                    f"<div class='urgency'>{display(urgency_sentence(item), item)}</div>"
+                    f"<div class='id'>{display(item.incident.incident_id, item)}</div>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
@@ -163,7 +161,7 @@ def render() -> None:
         if rows:
             st.dataframe(rows, width="stretch", hide_index=True, key="ov-assets")
         else:
-            st.info("No production-sensitive assets are attached to open P0/P1 cases.")
+            empty_state("no_assets", action="Open the queue to inspect lower-priority cases.")
         st.caption("Rows are observed CMDB assets on open high-priority incidents. No inferred dollar impact.")
     with right:
         st.subheader("Response progress")
@@ -181,8 +179,8 @@ def render() -> None:
             [
                 {
                     "Priority": priority(item.risk.risk_score),
-                    "Incident": item.title,
-                    "Affected service/asset": primary_asset(item),
+                    "Incident": display(item.title, item),
+                    "Affected service/asset": display(primary_asset(item), item),
                     "Status": status_of(item),
                     "Owner": owner_of(item),
                     "Age": fmt_age(item.incident.first_seen, now),
