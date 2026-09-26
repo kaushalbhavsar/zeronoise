@@ -55,12 +55,25 @@ st.markdown(
     """
     <style>
     .stApp { background: #070b12; color: #d7e0ea; }
-    .block-container { padding: 0.7rem 1.4rem 1.6rem 1.4rem; max-width: 1800px; }
+    .block-container { padding: 1.1rem 1.4rem 1.6rem 1.4rem; max-width: 1800px; }
     h1, h2, h3 { color: #f2f6fb !important; letter-spacing: 0; }
     [data-testid="stMetricLabel"] { color: #8fa2b8 !important; font-size: 0.74rem !important; text-transform: uppercase; }
     [data-testid="stMetricValue"] { color: #f2f6fb !important; font-variant-numeric: tabular-nums; }
     [data-testid="stSidebar"] { background: #0b111a; }
-    [data-testid="stHeader"] { background: rgba(7,11,18,0.9); }
+    header[data-testid="stHeader"],
+    .stAppHeader,
+    [data-testid="stToolbar"],
+    .stAppToolbar {
+        background: transparent !important;
+        box-shadow: none !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        border: 0 !important;
+    }
+    [data-testid="stDecoration"] { display: none !important; }
+    [data-testid="stStatusWidget"],
+    .stDeployButton { display: none !important; }
+    #MainMenu { visibility: hidden; }
     footer { visibility: hidden; }
     .topbar {
         display: flex; justify-content: space-between; align-items: baseline;
@@ -120,7 +133,7 @@ st.markdown(
     .icard .meta { color: #8fa2b8; font-size: 0.74rem; margin-top: 0.2rem; }
     .icard .ranks { font-variant-numeric: tabular-nums; font-size: 0.78rem; color: #d7e0ea; margin-top: 0.28rem; }
     .case-header {
-        position: sticky; top: 3.35rem; z-index: 30;
+        position: sticky; top: 0.4rem; z-index: 20;
         border: 1px solid #1c2736; border-left-width: 4px; border-radius: 8px;
         padding: 0.75rem 0.9rem 0.8rem 0.9rem; background: #0b111a;
         margin: 0.35rem 0 0.85rem 0;
