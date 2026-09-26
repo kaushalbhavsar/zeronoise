@@ -20,15 +20,18 @@ st.set_page_config(
     page_title="ZeroNoise SOC Triage",
     page_icon="🛡️",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown(
     """
     <style>
-    .stApp { background-color: #0b1220; color: #e6edf7; }
+    .stApp { background-color: #0b1220; color: #e8eef7; }
     .block-container { padding-top: 1.2rem; }
     h1, h2, h3 { color: #f4f7fb !important; }
+    [data-testid="stMetricLabel"] { color: #c5d4e8 !important; }
+    [data-testid="stMetricValue"] { color: #f4f7fb !important; }
+    [data-testid="stCaptionContainer"], .stCaption { color: #c5d4e8 !important; }
     .hero {
         background: linear-gradient(135deg, #132033 0%, #163024 100%);
         border: 1px solid #2a3d55;
@@ -36,7 +39,7 @@ st.markdown(
         padding: 1.15rem 1.35rem 1.05rem 1.35rem;
         margin-bottom: 1rem;
     }
-    .muted { color: #9fb0c6; font-size: 0.95rem; line-height: 1.45; }
+    .muted { color: #c5d4e8; font-size: 0.95rem; line-height: 1.45; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -299,8 +302,13 @@ def main() -> None:
             "contribution_pct_i = 100 * (w_i * s_i) / Σ(w_j * s_j)",
             language="text",
         )
-        st.table(
-            [{"driver": name.replace("_", " "), "weight": weight} for name, weight in RISK_WEIGHTS.items()]
+        st.dataframe(
+            [
+                {"driver": name.replace("_", " "), "weight": weight}
+                for name, weight in RISK_WEIGHTS.items()
+            ],
+            width="stretch",
+            hide_index=True,
         )
         st.markdown(
             """
