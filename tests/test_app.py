@@ -43,14 +43,19 @@ def test_overview_is_default_workspace() -> None:
 def test_queue_mode_does_not_raise() -> None:
     at = _queue()
     labels = [button.label for button in at.button]
-    assert any("Open case" in label for label in labels)
-    assert "Open selected case" in labels
+    assert "Open" in labels
+    assert "Preview" in labels
     assert not any("Back to queue" in label for label in labels)
     blob = " ".join(str(item.value) for item in at.markdown)
-    assert "Take next" in blob
-    assert "Working queue" in blob
-    assert "zn-heading" in blob
+    assert "zn-board" in blob
+    assert "zn-strip" in blob
+    assert "zn-board-head" in blob
+    assert "Active Incidents" in blob
+    assert "Noise Reduction" in blob
     assert at.session_state.active_case_id in (None, "")
+    # Dense board must expose ZeroNoise signature signals on strips.
+    assert "↑" in blob or "↓" in blob or "#" in blob
+    assert "→" in blob  # alert compression raw → deduped
 
 
 def test_opening_case_replaces_queue_with_workspace() -> None:
@@ -107,13 +112,15 @@ def test_back_to_queue_preserves_filters() -> None:
     assert not at.exception
     assert at.session_state.active_case_id is None
     assert at.session_state.queue_search == "wrk-corp"
-    assert any("Open case" in button.label for button in at.button)
+    assert any(button.label == "Open" for button in at.button)
+    blob = " ".join(str(item.value) for item in at.markdown)
+    assert "zn-board" in blob
 
 
 def test_open_case_helper_sets_active_id() -> None:
     at = _queue()
-    first = next(button for button in at.button if button.label == "Open case")
-    first.click().run()
+    opener = next(button for button in at.button if button.label == "Open")
+    opener.click().run()
     assert not at.exception
     assert at.session_state.active_case_id
     assert any("Back to queue" in button.label for button in at.button)

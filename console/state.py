@@ -176,6 +176,8 @@ def back_to_queue() -> None:
     st.session_state.ignore_queue_pick = True
     st.session_state.show_fp_confirm = False
     st.session_state.last_notice = None
+    if "case" in st.query_params:
+        del st.query_params["case"]
 
 
 def apply_deep_link(known_ids: set[str]) -> None:
@@ -191,6 +193,7 @@ def apply_deep_link(known_ids: set[str]) -> None:
 
 def open_case_view(incident_id: str, *, switch: bool = False) -> None:
     open_case(incident_id)
+    st.query_params["case"] = incident_id
     if switch:
         st.switch_page(PAGE_QUEUE)
     else:

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import streamlit as st
 
 from console.state import (
+    ASSIGNEES,
     ENVIRONMENTS,
     OPEN_STATUSES,
     PAGE_INTEL,
@@ -280,8 +281,17 @@ def visible_incidents(
     hide_closed: bool,
     unassigned_critical: bool = False,
     production_only: bool = False,
+    stage_filter: list[str] | None = None,
+    sensor_filter: list[str] | None = None,
+    owner_filter: list[str] | None = None,
 ) -> list[ScoredIncident]:
-    ordered = result.risk_ranked if order.startswith("AI") else result.legacy_ranked
+    from engine.queue_view import latest_attack_stage, sensor_labels
+
+    ordered = (
+        result.risk_ranked
+        if order.startswith("AI") or order.startswith("ZeroNoise")
+        else result.legacy_ranked
+    )
     visible: list[ScoredIncident] = []
     for item in ordered:
         record = case(item.incident.incident_id)
@@ -302,6 +312,29 @@ def visible_incidents(
         if unassigned_critical:
             if record["assignee"] != "Unassigned" or pri not in {"P0", "P1"}:
                 continue
+        if owner_filter and record["assignee"] not in owner_filter:
+            continue
+        if stage_filter:
+            _, stage_full = latest_attack_stage(item)
+            if stage_full not in stage_filter:
+                continue
+        if sensor_filter:
+            labels = set(sensor_labels(item))
+            if not labels.intersection(sensor_filter):
+                continue
+        ips: list[str] = []
+        alert_ids: list[str] = []
+        for alert in item.incident.alerts:
+            alert_ids.append(alert.alert_id)
+            alert_ids.extend(alert.original_alert_ids or [])
+            if alert.entities.src_ip:
+                ips.append(alert.entities.src_ip)
+            if alert.entities.dest_ip:
+                ips.append(alert.entities.dest_ip)
+            if alert.asset:
+                ips.append(alert.asset.ip_address)
+            if alert.dest_asset:
+                ips.append(alert.dest_asset.ip_address)
         blob = " ".join(
             [
                 item.incident.incident_id,
@@ -311,6 +344,10 @@ def visible_incidents(
                 primary_user(item),
                 primary_asset(item),
                 " ".join(item.incident.unique_tactics),
+                " ".join(item.incident.unique_hosts),
+                " ".join(item.incident.unique_users),
+                " ".join(ips),
+                " ".join(alert_ids),
             ]
         ).lower()
         if q and q.lower() not in blob:
@@ -364,12 +401,23 @@ def queue_filters() -> dict[str, object]:
         key="queue_preset",
     )
     flags = apply_preset(preset or "All open")
-    q = st.text_input("Search", placeholder="Title, INC, user, host", key="queue_search")
+    q = st.text_input(
+        "Search",
+        placeholder="Incident ID, hostname, user, IP, alert ID",
+        key="queue_search",
+    )
+    # Migrate older session values to ZeroNoise / Legacy labels.
+    legacy_order = st.session_state.get("queue_order")
+    if legacy_order == "AI Risk-Based Triage":
+        st.session_state.queue_order = "ZeroNoise Risk-Based"
+    elif legacy_order == "Legacy SIEM Triage":
+        st.session_state.queue_order = "Legacy SIEM"
     with st.expander("More filters", expanded=False):
         order = st.radio(
-            "Queue order",
-            ("AI Risk-Based Triage", "Legacy SIEM Triage"),
+            "Ranking mode",
+            ("ZeroNoise Risk-Based", "Legacy SIEM"),
             key="queue_order",
+            help="Same incidents, different order. Compare ZeroNoise vs severity×volume.",
         )
         pri_filter = st.multiselect(
             "Priority",
@@ -383,28 +431,59 @@ def queue_filters() -> dict[str, object]:
             default=list(OPEN_STATUSES),
             key="queue_status",
         )
+        stage_filter = st.multiselect(
+            "Attack stage",
+            [
+                "Initial Access",
+                "Execution",
+                "Persistence",
+                "Privilege Escalation",
+                "Credential Access",
+                "Discovery",
+                "Lateral Movement",
+                "Collection",
+                "Exfiltration",
+                "Impact",
+            ],
+            key="queue_stage",
+        )
+        sensor_filter = st.multiselect(
+            "Sensor",
+            ["EDR", "IAM", "NDR", "WAF", "DLP", "SIEM"],
+            key="queue_sensor",
+        )
         env_filter = st.multiselect(
-            "Environment",
+            "Asset environment",
             list(ENVIRONMENTS),
             key="queue_env",
         )
+        owner_filter = st.multiselect(
+            "Owner",
+            list(ASSIGNEES),
+            key="queue_owner_filter",
+        )
         hide_closed = st.checkbox("Hide closed", value=True, key="queue_hide_closed")
-        show_ranks = st.checkbox("Show AI / legacy rank columns", value=False, key="queue_show_ranks")
     if "queue_order" not in st.session_state:
-        order = "AI Risk-Based Triage"
+        order = "ZeroNoise Risk-Based"
         pri_filter = list(PRIORITIES)
         status_filter = list(OPEN_STATUSES)
         env_filter = []
+        stage_filter = []
+        sensor_filter = []
+        owner_filter = []
         hide_closed = True
-        show_ranks = False
     else:
         order = st.session_state.queue_order
         pri_filter = st.session_state.queue_priority
         status_filter = st.session_state.queue_status
         env_filter = st.session_state.queue_env
+        stage_filter = st.session_state.get("queue_stage", [])
+        sensor_filter = st.session_state.get("queue_sensor", [])
+        owner_filter = st.session_state.get("queue_owner_filter", [])
         hide_closed = st.session_state.queue_hide_closed
-        show_ranks = st.session_state.get("queue_show_ranks", False)
-    st.session_state.queue_mode = "ai" if str(order).startswith("AI") else "legacy"
+    st.session_state.queue_mode = (
+        "ai" if str(order).startswith("ZeroNoise") or str(order).startswith("AI") else "legacy"
+    )
     flags.update(
         {
             "preset": preset or "All open",
@@ -413,8 +492,11 @@ def queue_filters() -> dict[str, object]:
             "pri_filter": pri_filter,
             "status_filter": status_filter,
             "env_filter": env_filter,
+            "stage_filter": stage_filter,
+            "sensor_filter": sensor_filter,
+            "owner_filter": owner_filter,
             "hide_closed": hide_closed and flags["hide_closed"],
-            "show_ranks": show_ranks,
+            "show_ranks": True,
         }
     )
     return flags
