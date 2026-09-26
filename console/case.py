@@ -252,7 +252,8 @@ def render_decision_brief(item: ScoredIncident, card: IncidentCard) -> None:
         else:
             st.write(body)
     if card.why_not_false_positive:
-        st.caption(f"Uncertainty: {display(card.why_not_false_positive, item)}")
+        section("Why this may be a real attack", "Assessment")
+        st.write(display(card.why_not_false_positive, item))
     if not presenting():
         with st.expander("All resolved identities and assets"):
             st.write("\n".join(exposed_identities(item) or ["No resolved identity"]))
@@ -262,8 +263,7 @@ def render_decision_brief(item: ScoredIncident, card: IncidentCard) -> None:
 def render_overview_tab(item: ScoredIncident, card: IncidentCard) -> None:
     render_decision_brief(item, card)
     if card.contrastive_explanation or card.contrastive:
-        with st.expander("Why this incident ranks higher", expanded=not presenting()):
-            st.markdown("**Why this incident ranks higher**")
+        with st.expander("Why this ranks high", expanded=not presenting()):
             st.write(display(card.contrastive_explanation or card.contrastive or "", item))
     if presenting():
         return
@@ -402,7 +402,7 @@ def render_attack_tab(item: ScoredIncident, card: IncidentCard) -> None:
 
 
 def render_risk_tab(item: ScoredIncident, card: IncidentCard) -> None:
-    section("Why this score", "Assessment")
+    section("Why this ranks high", "Assessment")
     st.caption(
         f"Risk {item.risk.risk_score:.0f} is not vendor severity ({vendor_severity(item)}) "
         "and is not a confidence percentage."
@@ -599,7 +599,7 @@ def render_evidence_tab(item: ScoredIncident, card: IncidentCard) -> None:
             else:
                 st.caption("No process hash was present on these events.")
 
-    section("How the events are linked", "Observed")
+    section("Why these alerts are connected", "Observed")
     links = link_evidence(item)
     if links:
         st.dataframe(

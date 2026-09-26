@@ -131,7 +131,7 @@ def case_markdown(
     if card.contrastive_explanation or card.contrastive:
         lines.extend(
             [
-                "### Why this incident ranks higher",
+                "### Why this ranks high",
                 "",
                 _shown(card.contrastive_explanation or card.contrastive, item, mask),
                 "",
@@ -186,7 +186,7 @@ def case_markdown(
 
     lines.extend(
         [
-            "## Why this score",
+            "## Why this ranks high",
             "",
             f"Risk {item.risk.risk_score:.1f} is not vendor severity ({vendor_severity(item)}) "
             "and is not a confidence percentage.",
@@ -258,7 +258,7 @@ def case_markdown(
         lines.append("- No detections were attached to this incident.")
     lines.append("")
 
-    lines.extend(["## How the events are linked", ""])
+    lines.extend(["## Why these alerts are connected", ""])
     links = link_evidence(item)
     if links:
         for row in links:

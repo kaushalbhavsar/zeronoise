@@ -117,7 +117,7 @@ def render() -> None:
             card = next((c for c in result.cards if c.incident_id == item.incident.incident_id), None)
             why = (card.contrastive_explanation or card.contrastive) if card else None
             if why:
-                with st.expander("Why this incident ranks higher", expanded=True):
+                with st.expander("Why this ranks high", expanded=True):
                     st.write(display(why, item))
             else:
                 st.caption("No contrastive explanation was generated for this pair.")
@@ -150,7 +150,7 @@ def render() -> None:
             else:
                 st.info("No sensor labels are present on this snapshot.")
         with right:
-            section("Correlation evidence", "Observed")
+            section("Why these alerts are connected", "Observed")
             with_edges = sum(1 for item in result.risk_ranked if item.incident.edges)
             defined_metric("edges", "Incidents with inter-alert edges", with_edges)
             st.metric(

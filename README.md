@@ -111,18 +111,18 @@ Every card answers six questions from incident facts only:
 | --- | --- |
 | What happened? | `executive_summary` |
 | Why is it ranked here? | `why_prioritized` (ablation percents) |
-| Why does this incident rank higher? | `contrastive_explanation` |
-| Why might this be real rather than noise? | `why_not_false_positive` |
+| Why this ranks high | `contrastive_explanation` |
+| Why this may be a real attack | `why_not_false_positive` |
 | How did the attack evolve? | `attack_timeline` |
 | What should the SOC do now? | `recommended_actions` |
 
-Each timeline line is chronological and cites a real alert ID, for example `09:12  [ALRT-A-001] Initial Access — Anomalous VPN login for usr_svc_deploy on prd-app-02`. The explainer never invents alert IDs, hosts, users, techniques, IPs, or timestamps. False-positive wording stays uncertain (`unlikely to be isolated noise`), never `definitely malicious`.
+Each timeline line is chronological and cites a real alert ID, for example `09:12  [ALRT-A-001] Initial Access — Anomalous VPN login for usr_svc_deploy on prd-app-02`. The explainer never invents alert IDs, hosts, users, techniques, IPs, or timestamps. False-positive wording stays uncertain (`unlikely to be a single false alert`), never `definitely malicious`.
 
 Opening a case expands the analyst file:
 
-Executive Summary · Risk Breakdown · Affected Assets · Affected Identities · MITRE Tactics · MITRE Techniques · Attack Timeline · Correlation Evidence · Raw Alert References · Recommended Actions
+Executive Summary · Why this ranks high · Affected Assets · Affected Identities · MITRE Tactics · MITRE Techniques · Attack Timeline · Why these alerts are connected · Raw Alert References · Recommended Actions
 
-Recommended actions are generated from the incident's own users, hosts, sensors, and tactics — for example `Disable or rotate usr_admin_root credentials` or `Isolate prd-app-02 from the network` — never “involved hosts” when an entity ID is known.
+Recommended actions are generated from the incident's own users, hosts, sensors, and tactics — for example `Disable usr_admin_root and rotate its credentials` or `Isolate prd-app-02 from the network` — never “involved hosts” when an entity ID is known. User-facing explanations must score at least 70 on the Flesch Reading Ease scale.
 
 ## LLM contract
 
@@ -137,7 +137,7 @@ LLM_PROVIDER=gemini
 GEMINI_API_KEY=...
 ```
 
-The model receives only a structured incident payload (IDs, timestamps, entities, CMDB/IAM, ATT&CK, edges, score, attribution, naive rank, AI rank). It must not invent facts, change `risk_score` / ranks, or rewrite attribution percents. Every returned timeline step is checked for a real `[alert_id]`. If no key is set or the call fails, the deterministic Python card is used unchanged.
+The model receives only a structured incident payload (IDs, timestamps, entities, CMDB/IAM, ATT&CK, edges, score, attribution, naive rank, AI rank). It must not invent facts, change `risk_score` / ranks, or rewrite attribution percents. Every returned timeline step is checked for a real `[alert_id]`. Each prose field must also pass Flesch Reading Ease >= 70 after identifiers are ignored for scoring. Failed or hard-to-read LLM text falls back to the deterministic card. If no key is set or the call fails, that same Python card is used unchanged.
 
 ## Mandatory scenarios
 
