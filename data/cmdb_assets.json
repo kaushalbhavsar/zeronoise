@@ -1,0 +1,98 @@
+[
+  {
+    "host_id": "host-pci-db-01",
+    "hostname": "pci-db-01.prod.internal",
+    "ip_address": "10.20.4.12",
+    "environment": "prod",
+    "data_sensitivity": "crown_jewel_pii_pci",
+    "business_criticality": 5
+  },
+  {
+    "host_id": "host-fin-web-01",
+    "hostname": "fin-web-01.prod.internal",
+    "ip_address": "10.20.8.21",
+    "environment": "prod",
+    "data_sensitivity": "confidential",
+    "business_criticality": 4
+  },
+  {
+    "host_id": "host-dc-01",
+    "hostname": "dc-01.corp.internal",
+    "ip_address": "10.10.0.11",
+    "environment": "prod",
+    "data_sensitivity": "confidential",
+    "business_criticality": 5
+  },
+  {
+    "host_id": "host-hr-app-01",
+    "hostname": "hr-app-01.prod.internal",
+    "ip_address": "10.20.9.40",
+    "environment": "prod",
+    "data_sensitivity": "confidential",
+    "business_criticality": 3
+  },
+  {
+    "host_id": "host-jump-01",
+    "hostname": "jump-01.prod.internal",
+    "ip_address": "10.10.1.8",
+    "environment": "prod",
+    "data_sensitivity": "internal",
+    "business_criticality": 4
+  },
+  {
+    "host_id": "host-stg-api-02",
+    "hostname": "stg-api-02.staging.internal",
+    "ip_address": "10.40.2.16",
+    "environment": "staging",
+    "data_sensitivity": "internal",
+    "business_criticality": 2
+  },
+  {
+    "host_id": "host-dev-build-03",
+    "hostname": "dev-build-03.dev.internal",
+    "ip_address": "10.50.3.9",
+    "environment": "dev",
+    "data_sensitivity": "internal",
+    "business_criticality": 1
+  },
+  {
+    "host_id": "host-sandbox-web-07",
+    "hostname": "sandbox-web-07.sandbox.internal",
+    "ip_address": "10.90.1.77",
+    "environment": "sandbox",
+    "data_sensitivity": "public",
+    "business_criticality": 1
+  },
+  {
+    "host_id": "host-sandbox-api-03",
+    "hostname": "sandbox-api-03.sandbox.internal",
+    "ip_address": "10.90.1.33",
+    "environment": "sandbox",
+    "data_sensitivity": "public",
+    "business_criticality": 1
+  },
+  {
+    "host_id": "host-ws-maria",
+    "hostname": "ws-maria-chen.corp.internal",
+    "ip_address": "10.30.14.88",
+    "environment": "prod",
+    "data_sensitivity": "internal",
+    "business_criticality": 2
+  },
+  {
+    "host_id": "host-ws-admin",
+    "hostname": "ws-da-okonkwo.corp.internal",
+    "ip_address": "10.30.1.5",
+    "environment": "prod",
+    "data_sensitivity": "confidential",
+    "business_criticality": 4
+  },
+  {
+    "host_id": "host-ws-hr",
+    "hostname": "ws-priya-nair.corp.internal",
+    "ip_address": "10.30.18.22",
+    "environment": "prod",
+    "data_sensitivity": "internal",
+    "business_criticality": 2
+  }
+]

@@ -1,0 +1,37 @@
+[
+  {
+    "user_id": "u-maria-chen",
+    "department": "Finance",
+    "privilege_tier": "standard_user"
+  },
+  {
+    "user_id": "u-da-okonkwo",
+    "department": "IT Infrastructure",
+    "privilege_tier": "tier_0_domain_admin"
+  },
+  {
+    "user_id": "u-cloud-reza",
+    "department": "Platform Engineering",
+    "privilege_tier": "tier_1_cloud_admin"
+  },
+  {
+    "user_id": "u-svc-backup",
+    "department": "Platform Engineering",
+    "privilege_tier": "service_account"
+  },
+  {
+    "user_id": "u-priya-nair",
+    "department": "Human Resources",
+    "privilege_tier": "standard_user"
+  },
+  {
+    "user_id": "u-helpdesk-lee",
+    "department": "IT Support",
+    "privilege_tier": "standard_user"
+  },
+  {
+    "user_id": "u-contractor-kim",
+    "department": "Vendors",
+    "privilege_tier": "standard_user"
+  }
+]
