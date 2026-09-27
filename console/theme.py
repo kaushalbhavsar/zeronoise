@@ -18,7 +18,7 @@ CSS = """
   --zn-pad: 22px;
 }
 html, body, .stApp { background: var(--zn-bg); color: var(--zn-text); }
-.block-container { padding: 1.35rem 1.6rem 2.2rem 1.6rem; max-width: 1480px; }
+.block-container { padding: 1.1rem 1.6rem 2.2rem 1.6rem; max-width: 1480px; }
 h1 { font-size: 1.9rem !important; line-height: 1.2 !important; font-weight: 650 !important; letter-spacing: -0.02em; }
 h2 { font-size: 1.2rem !important; line-height: 1.3 !important; font-weight: 600 !important; }
 h3 { font-size: 1.05rem !important; line-height: 1.35 !important; font-weight: 600 !important; }
@@ -33,15 +33,46 @@ p, li, .stMarkdown, [data-testid="stCaption"] { font-size: 0.95rem; }
   font-feature-settings: "tnum";
 }
 [data-testid="stSidebar"] { background: #0c1524; }
+/* Top nav (st.navigation position=top) renders in the app header/toolbar.
+   Do not collapse those to height:0 — that clips the page-link labels. */
 header[data-testid="stHeader"],
-.stAppHeader,
+.stAppHeader {
+  background: var(--zn-bg) !important;
+  box-shadow: none !important;
+  border-bottom: 1px solid var(--zn-border) !important;
+  color: var(--zn-text) !important;
+  height: auto !important;
+  min-height: 3.5rem !important;
+  overflow: visible !important;
+  padding: 0.45rem 0.75rem 0.35rem 0.75rem !important;
+}
 [data-testid="stToolbar"],
 .stAppToolbar {
   background: transparent !important;
   box-shadow: none !important;
-  height: 0 !important;
-  min-height: 0 !important;
-  border: 0 !important;
+  height: auto !important;
+  min-height: 2.85rem !important;
+  overflow: visible !important;
+  display: flex !important;
+  align-items: center !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  padding-top: 0.15rem !important;
+}
+[data-testid="stTopNavLink"] {
+  overflow: visible !important;
+  line-height: 1.35 !important;
+  padding-top: 0.2rem !important;
+  padding-bottom: 0.2rem !important;
+}
+header[data-testid="stHeader"] a,
+.stAppHeader a,
+[data-testid="stToolbar"] a,
+.stAppToolbar a,
+header[data-testid="stHeader"] span,
+.stAppHeader span {
+  color: var(--zn-text) !important;
+  opacity: 1 !important;
 }
 [data-testid="stDecoration"] { display: none !important; }
 [data-testid="stStatusWidget"],
