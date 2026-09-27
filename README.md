@@ -339,3 +339,98 @@ pytest tests/test_deduplication.py tests/test_correlation.py tests/test_risk_sco
 ```
 
 Acceptance checks the seed-42 ranking that ZN-RISK-1.0 produces (B then A on risk, C on legacy), measurable fatigue reduction, isolated background noise, determinism, unused `scenario_id`, and that a malformed row does not fail the pipeline. Config tests check default values, YAML fingerprint equality, invalid weight/threshold rejection, score reproducibility, version + hash on every incident, and that changing `completion_weight` moves only Exfiltration/Impact cases.
+
+## Future work
+
+### Live SIEM feed
+
+ZeroNoise does not have a live SIEM connector. It is a **batch engine**: you hand it a window of alerts plus CMDB and IAM, and it returns a ranked incident snapshot. A live feed is future work: a thin adapter in front of `run_pipeline()`, not a change to scoring logic.
+
+`run_pipeline()` already accepts in-memory rows. A connector does not have to write JSONL first.
+
+```python
+from engine.pipeline import run_pipeline
+from engine.risk_config import load_risk_config
+
+result = run_pipeline(
+    alerts=mapped_alerts,          # list[dict] from the SIEM
+    assets=cmdb_rows,              # list[dict] from the CMDB
+    identities=iam_rows,           # list[dict] from IAM
+    risk_config=load_risk_config(),
+)
+```
+
+The Streamlit console today only reads `data/sample_alerts.jsonl` + `data/cmdb_assets.json` + `data/iam_users.json` and caches one snapshot. It is labeled “not a live SIEM feed” on purpose. A live deployment should call the engine on a timer and serve `result.risk_ranked`. If Streamlit stays in the path, replace the file load in `console/state.py` and invalidate `@st.cache_data`.
+
+#### Alert contract
+
+Map each SIEM event to the fields the normalizer already accepts:
+
+| Feed field | ZeroNoise field | Notes |
+| --- | --- | --- |
+| Alert ID | `id` | Unique. Duplicates collapse on rule + user + host + IPs. |
+| Time | `time` | ISO-8601. Correlation uses `correlation_window_hours` (default 4). |
+| Product | `vendor` | Aliases exist: CrowdStrike→EDR, Okta→IAM, Splunk/QRadar/Suricata→SIEM. |
+| Rule | `signature` | Used as `rule_name`. |
+| Severity | `sev` | Low / Medium / High / Critical (or 1–5). |
+| ATT&CK tactic | `tactic` | Required. Unknown tactics drop that row; the batch continues. |
+| ATT&CK technique | `technique` | Required, e.g. `T1003.001`. |
+| User | `user_id` | Must match IAM `user_id` for privilege scoring. |
+| Host | `host_id` | Must match CMDB `host_id` / hostname / IP. |
+| IPs | `src_ip`, `dest_ip` | Used for correlation and CMDB IP lookup. |
+| Confidence | `confidence` | 0–1. Missing → 0.5. |
+| Rule FPR | `fp_rate` | 0–1. Missing → 0.35. This is the main noise lever. |
+
+Do **not** send `scenario_id` on production events. That field is only for grading the demo. The scorer never reads it. Unknown users and hosts are kept and scored with **neutral** impact/privilege.
+
+#### Context stores
+
+Risk ranking is wrong without current CMDB and IAM:
+
+```json
+{"host_id": "prd-billing-db-01", "hostname": "...", "ip_address": "10.20.4.10",
+ "environment": "prod", "data_sensitivity": "crown_jewel_pii_pci",
+ "business_criticality": 5}
+```
+
+```json
+{"user_id": "jmartinez", "department": "Finance", "privilege_tier": "standard_user"}
+```
+
+`environment` must be `prod` / `staging` / `dev` / `sandbox`.  
+`data_sensitivity` must be `public` / `internal` / `confidential` / `crown_jewel_pii_pci`.  
+`privilege_tier` must be `standard_user` / `service_account` / `tier_1_cloud_admin` / `tier_0_domain_admin`.
+
+Refresh these on the same cadence as the alert window.
+
+#### Suggested live loop
+
+ZeroNoise re-scores the **whole window** each run. It is not incremental.
+
+1. Export or subscribe to SIEM alerts (saved search, watcher, webhook, Kafka, …).
+2. Map each event to the contract above.
+3. Keep a lookback of at least `correlation_window_hours` (default 4) plus slack.
+4. Call `run_pipeline(alerts=..., assets=..., identities=...)`.
+5. Serve `result.risk_ranked` to analysts.
+6. Repeat every 1–5 minutes.
+
+```python
+from datetime import datetime, timedelta, timezone
+from engine.pipeline import run_pipeline
+
+def triage_window(siem_client, cmdb, iam, lookback_hours=6):
+    since = datetime.now(timezone.utc) - timedelta(hours=lookback_hours)
+    raw = siem_client.search(since=since)
+    alerts = [map_siem_event(event) for event in raw]
+    return run_pipeline(alerts=alerts, assets=cmdb, identities=iam)
+```
+
+`map_siem_event` is the only product-specific code. The scorer, correlator, and risk YAML stay unchanged.
+
+What a live adapter must supply that many SIEMs omit:
+
+- **`fp_rate` per rule.** If every rule is 0.1, noisy WAF floods will not be damped.
+- **ATT&CK tactic/technique.** Attach it in the adapter if the SIEM has no mapping.
+- **Stable entity IDs.** The user/host string on the alert must match IAM/CMDB.
+
+Not in scope until a connector exists: Splunk/Elastic/Sentinel adapters, a webhook server, a Kafka consumer, or an incremental “score this one new alert” API. A new alert only changes rank after the next full window run.
