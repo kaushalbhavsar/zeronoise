@@ -67,6 +67,14 @@ streamlit run app.py
 
 `streamlit run app.py` opens three workspaces over the same cached snapshot: **Security overview**, **Incident queue**, and **Detection intelligence**. The snapshot is labeled as historical / demo data (offline JSONL + CMDB/IAM), not a live SIEM feed. Overview is the executive landing page: open exposure, P0–P1 cases, affected assets, ownership, and response progress. The queue is a dense operational board — compact horizontal strips (priority · risk · ZeroNoise rank/Δ · incident · asset · ATT&CK stage · age · sensors · alert compression · status · owner) so analysts can scan 10–15 incidents without scrolling. Ranking mode toggles ZeroNoise vs Legacy SIEM on the same row design. Clicking a strip opens the investigation workspace; **← Back to queue** keeps filters. **Export** on the case downloads a decision-first Markdown or PDF incident report (brief first, formulas and raw detections in the appendix). Detection intelligence compares AI vs legacy ranks, explains significant moves, and reports `N% fewer items to review` when 300 raw alerts become 111 incidents. That figure is volume compression, not measured time saved or fatigue. Case state (owner, status, notes, checklist) is session-local; session activity is recorded only after a change is saved. Share a case with `?case=<incident_id>`. **Presentation mode** masks identifiers for screen sharing and is not access control. Reset lives under **Demo / admin**.
 
+For live demo contrast against a basic open-source-style SIEM queue (severity × volume, no context), run:
+
+```bash
+python legacy_siem/app.py
+```
+
+Then open `http://127.0.0.1:8502/` beside ZeroNoise. Same `data/sample_alerts.jsonl` feed; the noisy WAF sandbox group ranks first.
+
 ## Risk formula
 
 The score is computed on **deduplicated, correlated incidents**, never on raw SIEM rows:
