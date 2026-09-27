@@ -13,6 +13,7 @@ from config import ALERTS_PATH, CMDB_PATH, IAM_PATH
 from engine.correlator import correlate_alerts
 from engine.explainer import explain_incidents
 from engine.normalizer import deduplicate_alerts, normalize_and_enrich_report, parse_jsonl
+from engine.risk_config import RiskParameters, default_risk_parameters, load_risk_config
 from engine.risk_scorer import score_incidents
 from engine.schemas import (
     Asset,
@@ -55,6 +56,8 @@ def compute_metrics(
     deduped: list[EnrichedAlert],
     risk_ranked: list[ScoredIncident],
     legacy_ranked: list[ScoredIncident],
+    *,
+    p1_threshold: float | None = None,
 ) -> PipelineMetrics:
     incident_count = len(risk_ranked)
     collapsed = max(0, enriched_count - len(deduped))
@@ -66,7 +69,8 @@ def compute_metrics(
     compression = 0.0
     if raw_count:
         compression = 100.0 * (1.0 - len(deduped) / raw_count)
-    high_priority = sum(1 for item in risk_ranked if item.risk.risk_score >= 70.0)
+    band = p1_threshold if p1_threshold is not None else default_risk_parameters().p1_threshold
+    high_priority = sum(1 for item in risk_ranked if item.risk.risk_score >= band)
 
     def rank_of(scored_list: list[ScoredIncident], scenario: str) -> int | None:
         for idx, item in enumerate(scored_list, start=1):
@@ -118,6 +122,7 @@ def run_pipeline(
     assets: list[dict] | list[Asset] | None = None,
     identities: list[dict] | list[Identity] | None = None,
     use_llm: bool = False,
+    risk_config: RiskParameters | None = None,
 ) -> PipelineResult:
     """Load → validate → normalize → enrich → dedup → correlate → cluster → score → rank → explain."""
     alerts_file = _as_path(alerts_path, ALERTS_PATH)
@@ -138,14 +143,16 @@ def run_pipeline(
     )
     all_errors = parse_errors + normalize_errors
 
+    cfg = risk_config or load_risk_config()
+
     # deduplicate
-    deduped = deduplicate_alerts(enriched)
+    deduped = deduplicate_alerts(enriched, window_minutes=int(cfg.dedup_window_minutes))
 
     # correlate + cluster (connected components / mega-split live in the correlator)
-    incidents = correlate_alerts(deduped)
+    incidents = correlate_alerts(deduped, window_minutes=int(cfg.correlation_window_minutes()))
 
     # score + rank
-    scored = score_incidents(incidents)
+    scored = score_incidents(incidents, config=cfg)
     risk_ranked = sorted(
         scored, key=lambda item: (-item.risk.risk_score, item.incident.incident_id)
     )
@@ -176,6 +183,7 @@ def run_pipeline(
         deduped=deduped,
         risk_ranked=risk_ranked,
         legacy_ranked=legacy_ranked,
+        p1_threshold=cfg.p1_threshold,
     )
     metrics.dropped_alert_count = len(all_errors)
     return PipelineResult(
@@ -203,6 +211,12 @@ if __name__ == "__main__":
     result = run_pipeline()
     m = result.metrics
     print("SOC triage pipeline")
+    if result.risk_ranked:
+        sample = result.risk_ranked[0]
+        print(
+            f"  risk model          : {sample.risk_model_version} "
+            f"({sample.risk_config_hash[:12]})"
+        )
     print(f"  raw alerts          : {m.raw_alert_count}")
     print(f"  after dedup         : {m.deduplicated_alert_count}")
     print(f"  incidents           : {m.incident_count}")

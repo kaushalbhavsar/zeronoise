@@ -156,16 +156,16 @@ def render() -> None:
             )
 
         heading("How scoring works")
+        from engine.risk_config import get_active_risk_config
+
+        cfg = get_active_risk_config()
         st.write(
             "Risk is RawRisk = B × K × C, then mapped with a saturating curve. "
             "Contribution percentages on a case are ablation shares — they are not confidence probabilities."
         )
-        st.code(
-            "fidelity_a = severity × confidence × (1 - 0.7 × FPR) × (1 + 0.10 × log1p(n-1))\n"
-            "B = min(Σ fidelity_a over unique (rule, tactic), 35)\n"
-            "K = 1 + 0.35×(tactics-1) + 0.20×(sensors-1) + 0.50×(Exfil or Impact)\n"
-            "C = 0.65×asset_risk + 0.35×privilege\n"
-            "risk_score = 100 × (1 − exp(−RawRisk / 45))",
-            language=None,
+        st.code(cfg.formula_text().replace(", ", "\n"), language=None)
+        st.caption(
+            f"{cfg.model_version} · hash {cfg.short_hash()} · "
+            "Expert-defined prototype parameters, not machine-learned. "
+            "Weights live in config/risk-model.yaml."
         )
-        st.caption("Variables and weights live in config.py. Ranking is deterministic for this dataset.")

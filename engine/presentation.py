@@ -582,7 +582,9 @@ def incident_roles(item: ScoredIncident) -> dict[str, str]:
     Distinguishes initial identity, privileged identity, source host, and destination.
     Title asset matches the risk-scorer title (highest-sensitivity resolved asset).
     """
-    from config import DATA_WEIGHT, ENVIRONMENT_WEIGHT, PRIVILEGE_WEIGHT
+    from engine.risk_config import get_active_risk_config
+
+    cfg = get_active_risk_config()
 
     alerts = sorted(
         item.incident.alerts,
@@ -601,7 +603,7 @@ def incident_roles(item: ScoredIncident) -> dict[str, str]:
         ident = alert.identity
         if not ident:
             continue
-        score = PRIVILEGE_WEIGHT.get(ident.privilege_tier, 0.0)
+        score = cfg.privilege_weight(ident.privilege_tier)
         if score > priv_score:
             priv_score = score
             privileged_identity = ident.user_id
@@ -630,8 +632,8 @@ def incident_roles(item: ScoredIncident) -> dict[str, str]:
         for asset in (alert.asset, alert.dest_asset):
             if not asset:
                 continue
-            score = DATA_WEIGHT.get(asset.data_sensitivity, 0.0) + ENVIRONMENT_WEIGHT.get(
-                asset.environment, 0.0
+            score = cfg.data_weight(asset.data_sensitivity) + cfg.environment_weight(
+                asset.environment
             )
             if score > title_score:
                 title_score = score

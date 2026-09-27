@@ -147,6 +147,16 @@ class RiskBreakdown(BaseModel):
     drivers: list[RiskDriver]
     formula: str
     raw_weighted_score: float = 0.0  # kept for fingerprint tests; not shown in UI
+    model_name: str = "ZeroNoise Risk Model"
+    model_version: str = "ZN-RISK-1.0"
+    config_hash: str = ""
+    fidelity_cap: float = 35.0
+    normalization_scale: float = 45.0
+    asset_context_weight: float = 0.65
+    identity_context_weight: float = 0.35
+    tactic_progression_weight: float = 0.35
+    sensor_corroboration_weight: float = 0.20
+    completion_weight: float = 0.50
 
 
 class ExplainableIncidentCard(BaseModel):
@@ -205,6 +215,9 @@ class ScoredIncident(BaseModel):
     naive_siem_rank: int | None = None
     risk_rank: int | None = None
     title: str
+    risk_model_name: str = "ZeroNoise Risk Model"
+    risk_model_version: str = "ZN-RISK-1.0"
+    risk_config_hash: str = ""
 
 
 class IncidentCard(BaseModel):

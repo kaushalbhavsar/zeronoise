@@ -38,15 +38,9 @@ from engine.schemas import PipelineResult, ScoredIncident
 
 
 def priority(score: float) -> str:
-    if score >= 85:
-        return "P0"
-    if score >= 70:
-        return "P1"
-    if score >= 50:
-        return "P2"
-    if score >= 30:
-        return "P3"
-    return "P4"
+    from engine.risk_config import get_active_risk_config, priority_from_score
+
+    return priority_from_score(score, get_active_risk_config())
 
 
 def severity_token(severity: str) -> str:
@@ -518,11 +512,35 @@ def session_chrome() -> None:
 
 
 def demo_admin_controls() -> None:
+    from engine.risk_config import get_active_risk_config
+
+    cfg = get_active_risk_config()
     with st.expander("Demo / admin", expanded=False):
         st.caption("These controls reset local session state. They do not change scores or source data.")
         if st.button("Reset case state", key="reset-case-state"):
             reset_case_state()
             st.rerun()
+        st.markdown("**Active Risk Model**")
+        st.caption("Expert-defined prototype parameters. Not machine-learned.")
+        st.code(
+            "\n".join(
+                [
+                    f"{'Version':<22}{cfg.model_version}",
+                    f"{'Config hash':<22}{cfg.short_hash()}",
+                    f"{'Calibration':<22}{cfg.calibration.source}",
+                    f"{'Tactic progression':<22}{cfg.tactic_progression_weight:.2f}",
+                    f"{'Sensor corroboration':<22}{cfg.sensor_corroboration_weight:.2f}",
+                    f"{'Completion':<22}{cfg.completion_weight:.2f}",
+                    f"{'FP dampening':<22}{cfg.false_positive_dampening:.2f}",
+                    f"{'Duplicate influence':<22}{cfg.duplicate_volume_weight:.2f}",
+                    f"{'Asset share':<22}{cfg.asset_context_weight:.2f}",
+                    f"{'Identity share':<22}{cfg.identity_context_weight:.2f}",
+                    f"{'Normalization scale':<22}{cfg.normalization_scale:.0f}",
+                    f"{'Fidelity cap':<22}{cfg.fidelity_cap:.0f}",
+                ]
+            ),
+            language=None,
+        )
 
 
 def defined_metric(key: str, label: str, value) -> None:
