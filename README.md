@@ -15,7 +15,7 @@ On the seeded demo dataset (`RANDOM_SEED = 42`, ~300 alerts over 24 hours):
 | Legacy SIEM (severity × volume) | Scanner on `dev-sandbox-04` (1800) | Ransomware staging | **#1** |
 | Risk-based incidents | 6-stage Impact on `wrk-corp-14` (88.3) | Crown-jewel exfil via `usr_admin_root` (80.8) | **#3** (30.9) |
 
-Those ranks come from `RawRisk = B × K × C`, not from `scenario_id`. The scanner is suppressed by a short kill chain, sandbox/public/crit-1 context, and FPR 0.85. The 4-Medium crown-jewel incident still outranks it; the 6-stage High ransomware chain has higher fidelity B, so it leads the risk queue.
+Those ranks come from `RawRisk = B × K × C` under **ZN-RISK-1.0**, not from `scenario_id`. The scanner is suppressed by a short kill chain, sandbox/public/crit-1 context, and FPR 0.85. The 4-Medium crown-jewel incident still outranks it; the 6-stage High ransomware chain has higher fidelity B, so it leads the risk queue.
 
 Alert fatigue drops because hundreds of raw alerts collapse into a short incident queue, and the item at the top is the one that actually matters.
 
@@ -26,6 +26,8 @@ synthetic JSONL ─┐
 CMDB assets     ─┼─► normalizer / enrich ─► dedup ─► correlate
 IAM identities  ─┘                                      │
                                                         ▼
+                                         load risk-model.yaml once
+                                                        │
                                               risk score + attribution
                                                         │
                                               deterministic explainer
@@ -35,20 +37,26 @@ IAM identities  ─┘                                      │
 
 `scenario_id` is written on synthetic alerts so the demo can be graded. The correlator and risk scorer never read it.
 
+Risk **logic** (how B, K, and C combine) lives in `engine/risk_scorer.py`. Risk **parameters** (how strongly each factor counts) live in `config/risk-model.yaml`. Changing `0.35` to `0.42` is a new configuration file. Changing the shape of `K = …` is a new risk-model implementation.
+
 ## Repository
 
 ```text
-data/generate_synthetic_data.py   Seeded CMDB, IAM, and alert stream
-engine/schemas.py                 Pydantic v2 models
+config/risk-model.yaml            ZN-RISK-1.0 expert-defined coefficients
+engine/risk_config.py             Frozen Pydantic model, loader, fingerprint
+engine/risk_scorer.py             B × K × C logic; consumes RiskParameters
+engine/schemas.py                 Pydantic v2 models (includes model version + hash)
 engine/normalizer.py              Vendor-field mapping, CMDB/IAM enrich, dedup
-engine/correlator.py              Entity + time union-find (no scenario_id)
-engine/risk_scorer.py             B × K × C risk + ablation attribution
+engine/correlator.py              Entity + time graph (no scenario_id)
 engine/explainer.py               Deterministic cards; optional OpenAI/Gemini prose
-engine/pipeline.py                load→…→score→rank→explain
+engine/incident_report.py         Decision-first Markdown / PDF export
+engine/pipeline.py                load→…→score→rank→explain (config loaded once)
 engine/presentation.py            Badges, rank delta, correlation sentences
+data/generate_synthetic_data.py   Seeded CMDB, IAM, and alert stream
 console/                          Security overview, incident queue, detection intelligence
+legacy_siem/                      Severity × volume contrast queue
 app.py                            Streamlit navigation entrypoint
-tests/                            Dedup, correlation, scoring, acceptance
+tests/                            Dedup, correlation, scoring, config, acceptance
 ```
 
 ## Quick start
@@ -65,7 +73,7 @@ pytest -q
 streamlit run app.py
 ```
 
-`streamlit run app.py` opens three workspaces over the same cached snapshot: **Security overview**, **Incident queue**, and **Detection intelligence**. The snapshot is labeled as historical / demo data (offline JSONL + CMDB/IAM), not a live SIEM feed. Overview is the executive landing page: open exposure, P0–P1 cases, affected assets, ownership, and response progress. The queue is a dense operational board — compact horizontal strips (priority · risk · ZeroNoise rank/Δ · incident · asset · ATT&CK stage · age · sensors · alert compression · status · owner) so analysts can scan 10–15 incidents without scrolling. Ranking mode toggles ZeroNoise vs Legacy SIEM on the same row design. Clicking a strip opens the investigation workspace; **← Back to queue** keeps filters. **Export** on the case downloads a decision-first Markdown or PDF incident report (brief first, formulas and raw detections in the appendix). Detection intelligence compares AI vs legacy ranks, explains significant moves, and reports `N% fewer items to review` when 300 raw alerts become 111 incidents. That figure is volume compression, not measured time saved or fatigue. Case state (owner, status, notes, checklist) is session-local; session activity is recorded only after a change is saved. Share a case with `?case=<incident_id>`. **Presentation mode** masks identifiers for screen sharing and is not access control. Reset lives under **Demo / admin**.
+`streamlit run app.py` opens three workspaces over the same cached snapshot: **Security overview**, **Incident queue**, and **Detection intelligence**. The snapshot is labeled as historical / demo data (offline JSONL + CMDB/IAM), not a live SIEM feed. Overview is the executive landing page: open exposure, P0–P1 cases, affected assets, ownership, and response progress. The queue is a dense operational board — compact horizontal strips (priority · risk · ZeroNoise rank/Δ · incident · asset · ATT&CK stage · age · sensors · alert compression · status · owner) so analysts can scan 10–15 incidents without scrolling. Ranking mode toggles ZeroNoise vs Legacy SIEM on the same row design. Clicking a strip opens the investigation workspace; **← Back to queue** keeps filters. **Export** on the case downloads a decision-first Markdown or PDF incident report (brief first, formulas and raw detections in the appendix). Detection intelligence compares AI vs legacy ranks, explains significant moves, and reports `N% fewer items to review` when 300 raw alerts become 111 incidents. That figure is volume compression, not measured time saved or fatigue. Case state (owner, status, notes, checklist) is session-local; session activity is recorded only after a change is saved. Share a case with `?case=<incident_id>`. **Presentation mode** masks identifiers for screen sharing and is not access control. Reset and the active risk-model table live under **Demo / admin**.
 
 For live demo contrast against a basic open-source-style SIEM queue (severity × volume, no context), run:
 
@@ -75,57 +83,107 @@ python legacy_siem/app.py
 
 Then open `http://127.0.0.1:8502/` beside ZeroNoise. Same `data/sample_alerts.jsonl` feed; the noisy WAF sandbox group ranks first.
 
-
 ## Risk formula
 
-The score is computed on **deduplicated, correlated incidents**, never on raw SIEM rows:
+The score is computed on **deduplicated, correlated incidents**, never on raw SIEM rows. Coefficients come from the active `RiskParameters` object (default file: `config/risk-model.yaml`):
 
 ```text
-fidelity_a = severity_weight × confidence × (1 - 0.7 × FPR)
-             × (1 + 0.10 × log1p(event_count - 1))
+fidelity_a = severity_weight
+           × confidence
+           × (1 − false_positive_dampening × FPR)
+           × (1 + duplicate_volume_weight × log1p(event_count − 1))
 
-B = min(Σ fidelity_a over unique (rule_name, mitre_tactic), 35)
+B = min(Σ fidelity_a over unique (rule_name, mitre_tactic), fidelity_cap)
 
-K = 1 + 0.35×max(0, m-1) + 0.20×max(0, s-1)
-    + 0.50×int(Exfiltration ∈ tactics or Impact ∈ tactics)
+K = progression_base
+  + tactic_progression_weight × max(0, m − 1)
+  + sensor_corroboration_weight × max(0, s − 1)
+  + completion_weight × completion_flag
 
-asset_risk = 0.35×env + 0.35×data + 0.30×criticality   (≈ 0.4–2.0)
+asset_risk = env_blend×env + data_blend×data + crit_blend×criticality
+             clipped to [asset_score_min, asset_score_max]
 P_priv     = highest involved privilege weight
-C          = 0.65×asset_risk + 0.35×P_priv     (configurable)
+C          = asset_context_weight × asset_risk
+           + identity_context_weight × P_priv
 
 RawRisk    = B × K × C
-risk_score = 100 × (1 − exp(−RawRisk / 45))
+risk_score = 100 × (1 − exp(−RawRisk / normalization_scale))
 ```
 
-The coefficients above are the **ZN-RISK-1.0** defaults. They live in `config/risk-model.yaml`, not in `risk_scorer.py`. `normalization_scale = 45` was chosen on the seed-42 dataset so multi-stage incidents saturate into the 70–90 band and isolated noise stays in the single digits. RawRisk is not shown on the analyst card. Scores are not assigned per `scenario_id`.
+`completion_flag` is 1 when Exfiltration or Impact is observed. ZN-RISK-1.0 uses `log1p(n − 1)` for volume, not `ln(n)`.
 
-Attribution is **counterfactual ablation**, not an independent split of B, K, and C. Each factor is replaced with its baseline (B → 2.0, K → 1.0, C → 1.0, FPR → 0) and the score drop (or FP-suppression lift) is renormalized to integer percents that sum to 100.
+ZN-RISK-1.0 defaults (also the built-in `RiskParameters()` fallback):
+
+| Parameter | Default |
+| --- | --- |
+| `false_positive_dampening` | 0.70 |
+| `duplicate_volume_weight` | 0.10 |
+| `fidelity_cap` | 35 |
+| `tactic_progression_weight` | 0.35 |
+| `sensor_corroboration_weight` | 0.20 |
+| `completion_weight` | 0.50 |
+| `asset_context_weight` | 0.65 |
+| `identity_context_weight` | 0.35 |
+| `normalization_scale` | 45 |
+| `p0` / `p1` / `p2` / `p3` thresholds | 85 / 70 / 50 / 30 |
+
+`normalization_scale = 45` was chosen on the seed-42 dataset so multi-stage incidents saturate into the 70–90 band and isolated noise stays in the single digits. RawRisk is not shown on the analyst card. Scores are not assigned per `scenario_id`.
+
+Attribution is **counterfactual ablation**, not an independent split of B, K, and C. Each factor is replaced with its baseline (B → `fidelity_baseline`, K → `progression_baseline`, C → `blast_baseline`, FPR → 0) and the score drop (or FP-suppression lift) is renormalized to integer percents that sum to 100.
 
 | Factor | What it measures |
 | --- | --- |
-| Alert Fidelity **B** | Severity × confidence × (1 − 0.7×FPR), unique (rule, tactic) only, log volume |
+| Alert Fidelity **B** | Severity × confidence × FP dampening, unique (rule, tactic) only, log volume |
 | Kill-chain **K** | Distinct ATT&CK tactics, distinct sensors, Exfiltration/Impact completion |
-| Blast radius **C** | Highest-risk asset (0.65) and highest-risk identity (0.35) |
+| Blast radius **C** | Highest-risk asset and highest-risk identity |
 | FP/Noise suppression | How much the score rises if every alert is recomputed with FPR = 0 |
 
 Volume has strongly diminishing returns. 120 identical Critical alerts are not 120 attack stages.
 
-Given the same dataset and the same risk-model file, ranking, scores, and attribution percentages are identical every run.
+Given the same dataset and the same risk-model file, ranking, scores, attribution percentages, and the configuration hash are identical every run.
 
 ## Risk Model Configuration
 
-**ZN-RISK-1.0 uses expert-defined prototype parameters. They have not yet been calibrated against production SOC outcomes.**
+**ZN-RISK-1.0 uses expert-defined prototype parameters. They have not yet been calibrated against production SOC outcomes. They are not machine-learned.**
 
 | Concern | Where it lives |
 | --- | --- |
 | Risk model **logic** (how B, K, and C combine) | `engine/risk_scorer.py` |
 | Risk model **parameters** (how strongly each factor counts) | `config/risk-model.yaml` + `engine/risk_config.py` |
 
-Changing `0.35` to `0.42` requires only a new configuration file. Changing the shape of `K = …` requires a new risk-model implementation/version.
+### Loading
 
-Default file: `config/risk-model.yaml`. Load once at pipeline start with `load_risk_config()`. If the file is missing, ZeroNoise uses built-in `RiskParameters()` defaults and logs that fact. If the file exists but is invalid, load fails fast.
+`run_pipeline()` calls `load_risk_config()` **once** at the start of a run and passes the same frozen `RiskParameters` into every `score_incident` call. YAML is not re-parsed per incident.
 
-Create a new version by copying the file:
+| Situation | Behavior |
+| --- | --- |
+| `config/risk-model.yaml` exists and is valid | Load, validate, log version + hash, score with that object |
+| File is missing | Use built-in `RiskParameters()` (ZN-RISK-1.0 defaults) and log that an external file was not loaded |
+| File exists but is invalid | Fail fast with a validation error. No silent fallback |
+
+```python
+from engine.risk_config import load_risk_config
+from engine.pipeline import run_pipeline
+
+cfg = load_risk_config("config/risk-model.yaml")
+result = run_pipeline(risk_config=cfg)
+```
+
+Startup logs look like:
+
+```text
+ZeroNoise Risk Engine initialized
+Model: ZN-RISK-1.0
+Config: config/risk-model.yaml
+Config hash: 145d80b4415e
+Calibration source: expert_defined
+```
+
+The risk configuration contains no API keys or credentials.
+
+### Creating a new model version
+
+Copy the file; do not edit scoring code to change a weight.
 
 ```text
 config/risk-model.yaml
@@ -133,11 +191,27 @@ config/risk-model-v1.1.yaml
 config/risk-model-experimental.yaml
 ```
 
-Then pass that path into `load_risk_config()` / `run_pipeline(risk_config=...)`. The scorer accepts any valid `RiskParameters` object.
+Change `model_version` (for example `ZN-RISK-1.1`) and the coefficients you want to try. Then:
 
-Every scored incident stores `risk_model_version` and a SHA-256 `risk_config_hash` of the canonical parameter set (calibration metrics are excluded). The export appendix prints both so a historical score can be reproduced even if the active file later changes.
+```python
+cfg = load_risk_config("config/risk-model-v1.1.yaml")
+run_pipeline(risk_config=cfg)
+```
 
-Validation rejects: context weights that do not sum to 1.0, priority bands that are not strictly descending (`P0 > P1 > P2 > P3`), a zero/negative normalization scale, FP dampening outside `[0, 1]`, unknown keys, negative additive multipliers, and a sensor weight that exceeds the tactic-progression weight.
+The scorer accepts any valid `RiskParameters` object. Future calibration should only need to produce a new file.
+
+### Validation
+
+`RiskParameters` is frozen (`ConfigDict(frozen=True)`) and rejects:
+
+- `asset_context_weight + identity_context_weight` not equal to 1.0 (± 1e-6)
+- asset environment / data / criticality blends that do not sum to 1.0
+- priority bands that are not strictly descending (`P0 > P1 > P2 > P3`)
+- `sensor_corroboration_weight > tactic_progression_weight` (progression must not matter less than adding a sensor)
+- `normalization_scale` or `fidelity_cap` ≤ 0
+- `false_positive_dampening` outside `[0, 1]`
+- negative additive multipliers
+- unknown keys
 
 ### Parameter meaning
 
@@ -175,11 +249,26 @@ Validation rejects: context weights that do not sum to 1.0, priority bands that 
 | `normalization_scale` | Scores rise more slowly toward 100 |
 | `fidelity_cap` | More detection evidence can accumulate before saturation |
 
-### Provenance and reproducibility
+### Fingerprint, provenance, and reproducibility
 
-`calibration.source` is `expert_defined` until a measured calibration exists. Do not invent NDCG or recall figures. The Demo / admin panel shows the active version, config hash, and coefficients, labeled as prototype parameters.
+Every scored incident stores:
 
-Every score stores `risk_model_version` and `risk_config_hash` (SHA-256 of the canonical JSON, excluding `calibration`). Historical incidents keep the hash they were scored with even if the active file later changes. Future calibration should produce a new YAML file and pass that `RiskParameters` object into the same scorer.
+- `risk_model_name` — for example `ZeroNoise Risk Model`
+- `risk_model_version` — for example `ZN-RISK-1.0`
+- `risk_config_hash` — SHA-256 of the canonical JSON parameter set
+
+The hash excludes `calibration` (provenance only). Historical incidents keep the version and hash they were scored with even if the active file later changes. The export technical appendix prints:
+
+```text
+Risk model: ZN-RISK-1.0
+Configuration hash: 145d80b4415e
+Normalization scale: 45
+Fidelity cap: 35
+```
+
+`calibration.source` is `expert_defined` until a measured calibration exists. Optional fields (`ndcg_at_5`, `critical_recall_at_10`, …) stay `null` unless they have been measured. Do not invent those figures.
+
+The Demo / admin panel shows the active version, short hash, and coefficients, labeled as prototype parameters.
 
 ## Explainability
 
@@ -230,17 +319,23 @@ The normalizer parses JSONL, canonicalizes timestamps and IPs, resolves host IP 
 
 ## Design constraints
 
-- Dedup key: rule + user + host + src IP + dest IP inside a **rolling 15-minute** window. Survivors carry `event_count`, `original_alert_ids`, `first_seen`, `last_seen`.
+- Dedup key: rule + user + host + src IP + dest IP inside the configured rolling window (`dedup_window_minutes`, default **15**). Survivors carry `event_count`, `original_alert_ids`, `first_seen`, `last_seen`.
 - Correlation: NetworkX `MultiGraph`. Edges are `SHARED_HOST`, `SHARED_IDENTITY`, `SHARED_ATTACKER_IP`, `DESTINATION_PIVOT`, `HOST_IP_PIVOT`, `PROCESS_HASH`, each with `time_delta_minutes` and `correlation_strength`.
-- Two alerts join only if they are within **4 hours** and have at least one meaningful relationship.
+- Two alerts join only if they are within the configured correlation window (`correlation_window_hours`, default **4**) and have at least one meaningful relationship.
 - DNS/proxy/NAT/LB/jump/DHCP/scanner infrastructure and high-fanout attacker IPs cannot weld unrelated hosts. Components over 25 nodes are split on strong edges, then time gaps.
-- Volume has strongly diminishing returns (`1 + 0.10 × log1p(n − 1)`). 120 identical alerts are not 120 attack stages.
-- Naive SIEM score: `Σ SEVERITY_WEIGHTS[raw_alert]` with Low=2, Medium=5, High=10, Critical=15. **No dedup.** `naive_siem_rank` is that descending order.
+- Volume has strongly diminishing returns (`1 + duplicate_volume_weight × log1p(n − 1)`). 120 identical alerts are not 120 attack stages.
+- Naive SIEM score: `Σ severity_weights[raw_alert]` with ZN-RISK-1.0 Low=2, Medium=5, High=10, Critical=15. **No dedup.** `naive_siem_rank` is that descending order.
 
 ## Tests
 
 ```bash
-pytest tests/test_deduplication.py tests/test_correlation.py tests/test_risk_scoring.py tests/test_acceptance.py -q
+pytest -q
 ```
 
-Acceptance checks the seed-42 ranking that the formula produces (B then A on risk, C on legacy), measurable fatigue reduction, isolated background noise, determinism, unused `scenario_id`, and that a malformed row does not fail the pipeline.
+Or the core engine subset:
+
+```bash
+pytest tests/test_deduplication.py tests/test_correlation.py tests/test_risk_scoring.py tests/test_risk_config.py tests/test_acceptance.py -q
+```
+
+Acceptance checks the seed-42 ranking that ZN-RISK-1.0 produces (B then A on risk, C on legacy), measurable fatigue reduction, isolated background noise, determinism, unused `scenario_id`, and that a malformed row does not fail the pipeline. Config tests check default values, YAML fingerprint equality, invalid weight/threshold rejection, score reproducibility, version + hash on every incident, and that changing `completion_weight` moves only Exfiltration/Impact cases.
