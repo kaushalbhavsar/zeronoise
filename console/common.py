@@ -522,24 +522,24 @@ def demo_admin_controls() -> None:
             st.rerun()
         st.markdown("**Active Risk Model**")
         st.caption("Expert-defined prototype parameters. Not machine-learned.")
-        st.code(
-            "\n".join(
-                [
-                    f"{'Version':<22}{cfg.model_version}",
-                    f"{'Config hash':<22}{cfg.short_hash()}",
-                    f"{'Calibration':<22}{cfg.calibration.source}",
-                    f"{'Tactic progression':<22}{cfg.tactic_progression_weight:.2f}",
-                    f"{'Sensor corroboration':<22}{cfg.sensor_corroboration_weight:.2f}",
-                    f"{'Completion':<22}{cfg.completion_weight:.2f}",
-                    f"{'FP dampening':<22}{cfg.false_positive_dampening:.2f}",
-                    f"{'Duplicate influence':<22}{cfg.duplicate_volume_weight:.2f}",
-                    f"{'Asset share':<22}{cfg.asset_context_weight:.2f}",
-                    f"{'Identity share':<22}{cfg.identity_context_weight:.2f}",
-                    f"{'Normalization scale':<22}{cfg.normalization_scale:.0f}",
-                    f"{'Fidelity cap':<22}{cfg.fidelity_cap:.0f}",
-                ]
-            ),
-            language=None,
+        st.markdown(
+            f"`{cfg.model_version}` · hash `{cfg.short_hash()}` · "
+            f"{cfg.calibration.source}"
+        )
+        st.dataframe(
+            [
+                {"Parameter": "Tactic progression", "Value": f"{cfg.tactic_progression_weight:.2f}"},
+                {"Parameter": "Sensor corroboration", "Value": f"{cfg.sensor_corroboration_weight:.2f}"},
+                {"Parameter": "Completion", "Value": f"{cfg.completion_weight:.2f}"},
+                {"Parameter": "FP dampening", "Value": f"{cfg.false_positive_dampening:.2f}"},
+                {"Parameter": "Duplicate influence", "Value": f"{cfg.duplicate_volume_weight:.2f}"},
+                {"Parameter": "Asset share", "Value": f"{cfg.asset_context_weight:.2f}"},
+                {"Parameter": "Identity share", "Value": f"{cfg.identity_context_weight:.2f}"},
+                {"Parameter": "Normalization scale", "Value": f"{cfg.normalization_scale:.0f}"},
+                {"Parameter": "Fidelity cap", "Value": f"{cfg.fidelity_cap:.0f}"},
+            ],
+            hide_index=True,
+            width="stretch",
         )
 
 
