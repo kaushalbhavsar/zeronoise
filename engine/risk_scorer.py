@@ -1,12 +1,12 @@
 """Deterministic incident risk scoring and counterfactual attribution.
 
-The real score operates on deduplicated, correlated incidents:
+The equations are the risk-model logic. Coefficients come from RiskParameters.
 
-    B = min(Σ fidelity_a over unique (rule_name, mitre_tactic), 35)
-    K = 1 + 0.35×max(0, m-1) + 0.20×max(0, s-1) + 0.50×completion
-    C = BLAST_ASSET_WEIGHT × asset_risk + BLAST_IDENTITY_WEIGHT × P_priv
+    B = min(Σ fidelity_a over unique (rule_name, mitre_tactic), fidelity_cap)
+    K = progression_base + tactic_w×max(0, m-1) + sensor_w×max(0, s-1) + completion_w×flag
+    C = asset_context_weight × asset_risk + identity_context_weight × P_priv
     RawRisk = B × K × C
-    risk_score = 100 × (1 − exp(−RawRisk / RISK_SCALE))
+    risk_score = 100 × (1 − exp(−RawRisk / normalization_scale))
 
 RawRisk is not shown to the analyst. Attribution is counterfactual
 ablation, not an independent percentage split of B, K, and C.
@@ -18,35 +18,10 @@ from __future__ import annotations
 import math
 from typing import Iterable
 
-from config import (
-    ASSET_CRIT_BLEND,
-    ASSET_DATA_BLEND,
-    ASSET_ENV_BLEND,
-    ASSET_SCORE_MAX,
-    ASSET_SCORE_MIN,
+from engine.risk_config import (
     ATTRIBUTION_FACTORS,
-    BLAST_ASSET_WEIGHT,
-    BLAST_BASELINE,
-    BLAST_IDENTITY_WEIGHT,
-    COMPLETION_TACTICS,
-    CRITICALITY_WEIGHT,
-    DATA_WEIGHT,
-    ENVIRONMENT_WEIGHT,
-    FIDELITY_BASELINE,
-    FIDELITY_CAP,
-    FIDELITY_FPR_COEFF,
-    FIDELITY_VOLUME_COEFF,
-    NEUTRAL_IMPACT,
-    NEUTRAL_PRIVILEGE,
-    PRIVILEGE_WEIGHT,
-    PROGRESSION_BASE,
-    PROGRESSION_BASELINE,
-    PROGRESSION_COMPLETION_BONUS,
-    PROGRESSION_SENSOR_COEFF,
-    PROGRESSION_TACTIC_COEFF,
-    RISK_SCALE,
-    SEVERITY_WEIGHTS,
-    UNOBSERVED_PRIVILEGE,
+    RiskParameters,
+    default_risk_parameters,
 )
 from engine.schemas import (
     Asset,
@@ -58,18 +33,9 @@ from engine.schemas import (
     ScoredIncident,
 )
 
-FORMULA = (
-    "risk_score = 100 × (1 − exp(−RawRisk / {scale})), "
-    "RawRisk = B × K × C, "
-    "C = {wa}×asset_risk + {wp}×P_priv, "
-    "B = min(Σ fidelity_a over unique (rule, tactic), {cap_b}), "
-    "K = 1 + 0.35×max(0,m-1) + 0.20×max(0,s-1) + 0.50×completion"
-).format(
-    scale=RISK_SCALE,
-    wa=BLAST_ASSET_WEIGHT,
-    wp=BLAST_IDENTITY_WEIGHT,
-    cap_b=FIDELITY_CAP,
-)
+
+def _cfg(config: RiskParameters | None) -> RiskParameters:
+    return config if config is not None else default_risk_parameters()
 
 
 def _clip(value: float, low: float, high: float) -> float:
@@ -93,9 +59,10 @@ def _identities_for(incident: CandidateIncident) -> list[Identity]:
     return list(seen.values())
 
 
-def diminishing_volume(event_count: int) -> float:
-    """Logarithmic volume factor from the fidelity formula."""
-    return 1.0 + FIDELITY_VOLUME_COEFF * math.log1p(max(0, event_count - 1))
+def diminishing_volume(event_count: int, config: RiskParameters | None = None) -> float:
+    """Logarithmic volume factor. ZN-RISK-1.0 uses log1p(n-1), not ln(n)."""
+    cfg = _cfg(config)
+    return 1.0 + cfg.duplicate_volume_weight * math.log1p(max(0, event_count - 1))
 
 
 def fidelity_a(
@@ -104,18 +71,21 @@ def fidelity_a(
     confidence: float,
     false_positive_rate: float,
     event_count: int,
+    config: RiskParameters | None = None,
 ) -> float:
     """Per-alert threat fidelity before (rule, tactic) collapse."""
+    cfg = _cfg(config)
     return (
-        SEVERITY_WEIGHTS[severity_raw]
+        cfg.severity_weight(severity_raw)
         * confidence
-        * (1.0 - FIDELITY_FPR_COEFF * false_positive_rate)
-        * diminishing_volume(event_count)
+        * (1.0 - cfg.false_positive_dampening * false_positive_rate)
+        * diminishing_volume(event_count, cfg)
     )
 
 
 def _collapse_unique_signals(
     alerts: Iterable[EnrichedAlert],
+    config: RiskParameters,
     *,
     fpr_override: float | None = None,
 ) -> dict[tuple[str, str], dict]:
@@ -137,12 +107,19 @@ def _collapse_unique_signals(
         bucket["event_count"] += events
         bucket["conf_w"] += alert.confidence * events
         bucket["fpr_w"] += fpr * events
-        if SEVERITY_WEIGHTS[alert.severity_raw] > SEVERITY_WEIGHTS[bucket["severity"]]:
+        if cfg_severity_beats(alert.severity_raw, bucket["severity"], config):
             bucket["severity"] = alert.severity_raw
     return buckets
 
 
-def _fidelity_from_buckets(buckets: dict[tuple[str, str], dict]) -> tuple[float, list[str]]:
+def cfg_severity_beats(left: str, right: str, config: RiskParameters) -> bool:
+    return config.severity_weight(left) > config.severity_weight(right)
+
+
+def _fidelity_from_buckets(
+    buckets: dict[tuple[str, str], dict],
+    config: RiskParameters,
+) -> tuple[float, list[str]]:
     scores: list[float] = []
     evidence: list[str] = []
     for (rule, tactic), bucket in sorted(buckets.items()):
@@ -152,6 +129,7 @@ def _fidelity_from_buckets(buckets: dict[tuple[str, str], dict]) -> tuple[float,
             confidence=bucket["conf_w"] / events,
             false_positive_rate=bucket["fpr_w"] / events,
             event_count=events,
+            config=config,
         )
         scores.append(score)
         evidence.append(
@@ -159,9 +137,9 @@ def _fidelity_from_buckets(buckets: dict[tuple[str, str], dict]) -> tuple[float,
             f"Severity is {bucket['severity']}. It covers {events} events."
         )
     total = sum(scores)
-    capped = min(total, FIDELITY_CAP)
-    if total > FIDELITY_CAP:
-        evidence.append(f"Alert quality was capped at {FIDELITY_CAP:.0f}.")
+    capped = min(total, config.fidelity_cap)
+    if total > config.fidelity_cap:
+        evidence.append(f"Alert quality was capped at {config.fidelity_cap:.0f}.")
     else:
         evidence.append(f"Alert quality uses {len(scores)} unique rule and tactic pairs.")
     return capped, evidence
@@ -169,27 +147,34 @@ def _fidelity_from_buckets(buckets: dict[tuple[str, str], dict]) -> tuple[float,
 
 def score_threat_fidelity(
     incident: CandidateIncident,
+    config: RiskParameters | None = None,
     *,
     fpr_override: float | None = None,
 ) -> tuple[float, list[str]]:
     """Base threat fidelity B over unique (rule, tactic) pairs."""
+    cfg = _cfg(config)
     return _fidelity_from_buckets(
-        _collapse_unique_signals(incident.alerts, fpr_override=fpr_override)
+        _collapse_unique_signals(incident.alerts, cfg, fpr_override=fpr_override),
+        cfg,
     )
 
 
-def score_progression(incident: CandidateIncident) -> tuple[float, list[str]]:
+def score_progression(
+    incident: CandidateIncident,
+    config: RiskParameters | None = None,
+) -> tuple[float, list[str]]:
     """Kill-chain progression K."""
+    cfg = _cfg(config)
     tactics = [t for t in incident.unique_tactics if t]
     sensors = [p for p in incident.unique_products if p]
     m = len(tactics)
     s = len(sensors)
-    completion = bool(COMPLETION_TACTICS.intersection(tactics))
+    completion = bool(set(cfg.completion_tactics).intersection(tactics))
     value = (
-        PROGRESSION_BASE
-        + PROGRESSION_TACTIC_COEFF * max(0, m - 1)
-        + PROGRESSION_SENSOR_COEFF * max(0, s - 1)
-        + PROGRESSION_COMPLETION_BONUS * int(completion)
+        cfg.progression_base
+        + cfg.tactic_progression_weight * max(0, m - 1)
+        + cfg.sensor_corroboration_weight * max(0, s - 1)
+        + cfg.completion_weight * int(completion)
     )
     evidence = [
         f"This incident uses {m} ATT&CK tactics.",
@@ -203,17 +188,21 @@ def score_progression(incident: CandidateIncident) -> tuple[float, list[str]]:
     return value, evidence
 
 
-def _asset_score(asset: Asset) -> float:
+def _asset_score(asset: Asset, config: RiskParameters) -> float:
     value = (
-        ASSET_ENV_BLEND * ENVIRONMENT_WEIGHT[asset.environment]
-        + ASSET_DATA_BLEND * DATA_WEIGHT[asset.data_sensitivity]
-        + ASSET_CRIT_BLEND * CRITICALITY_WEIGHT[asset.business_criticality]
+        config.asset_environment_blend * config.environment_weight(asset.environment)
+        + config.asset_data_blend * config.data_weight(asset.data_sensitivity)
+        + config.asset_criticality_blend * config.criticality_weight(asset.business_criticality)
     )
-    return _clip(value, ASSET_SCORE_MIN, ASSET_SCORE_MAX)
+    return _clip(value, config.asset_score_min, config.asset_score_max)
 
 
-def score_business_impact(incident: CandidateIncident) -> tuple[float, list[str]]:
-    """Highest-risk touched asset, normalized to ≈ 0.4–2.0."""
+def score_business_impact(
+    incident: CandidateIncident,
+    config: RiskParameters | None = None,
+) -> tuple[float, list[str]]:
+    """Highest-risk touched asset, normalized to the configured band."""
+    cfg = _cfg(config)
     assets = _assets_for(incident)
     if not assets:
         unresolved = sorted(
@@ -228,11 +217,11 @@ def score_business_impact(incident: CandidateIncident) -> tuple[float, list[str]
             if unresolved
             else "No CMDB match. We used a mid impact score."
         )
-        return NEUTRAL_IMPACT, [note]
+        return cfg.neutral_impact, [note]
     best = -1.0
     evidence: list[str] = []
     for asset in assets:
-        value = _asset_score(asset)
+        value = _asset_score(asset, cfg)
         if value >= best:
             best = value
             evidence = [
@@ -244,8 +233,12 @@ def score_business_impact(incident: CandidateIncident) -> tuple[float, list[str]
     return best, evidence
 
 
-def score_privilege(incident: CandidateIncident) -> tuple[float, list[str]]:
+def score_privilege(
+    incident: CandidateIncident,
+    config: RiskParameters | None = None,
+) -> tuple[float, list[str]]:
     """Highest-risk identity involved (P_priv)."""
+    cfg = _cfg(config)
     identities = _identities_for(incident)
     if not identities:
         claimed = sorted(
@@ -256,16 +249,16 @@ def score_privilege(incident: CandidateIncident) -> tuple[float, list[str]]:
             }
         )
         if claimed:
-            return NEUTRAL_PRIVILEGE, [
+            return cfg.neutral_privilege, [
                 f"IAM has no record for {', '.join(claimed)}. We used a mid privilege score."
             ]
-        return UNOBSERVED_PRIVILEGE, [
+        return cfg.unobserved_privilege, [
             "No user was seen. We used a low privilege score."
         ]
     best = -1.0
     evidence: list[str] = []
     for identity in identities:
-        value = PRIVILEGE_WEIGHT[identity.privilege_tier]
+        value = cfg.privilege_weight(identity.privilege_tier)
         if value >= best:
             best = value
             evidence = [
@@ -275,34 +268,45 @@ def score_privilege(incident: CandidateIncident) -> tuple[float, list[str]]:
     return best, evidence
 
 
-def blast_radius(asset_risk: float, identity_risk: float) -> float:
-    """Context multiplier C. Weights live in config.py."""
-    return BLAST_ASSET_WEIGHT * asset_risk + BLAST_IDENTITY_WEIGHT * identity_risk
+def blast_radius(
+    asset_risk: float,
+    identity_risk: float,
+    config: RiskParameters | None = None,
+) -> float:
+    """Context multiplier C."""
+    cfg = _cfg(config)
+    return cfg.asset_context_weight * asset_risk + cfg.identity_context_weight * identity_risk
 
 
 def raw_risk(fidelity_b: float, progression_k: float, blast_c: float) -> float:
     return fidelity_b * progression_k * blast_c
 
 
-def normalize_risk(raw: float, scale: float = RISK_SCALE) -> float:
+def normalize_risk(raw: float, config: RiskParameters | None = None) -> float:
     """Monotonic saturating map into [0, 100]. Does not expose RawRisk."""
+    cfg = _cfg(config)
+    scale = cfg.normalization_scale
     if raw <= 0 or scale <= 0:
         return 0.0
     return 100.0 * (1.0 - math.exp(-raw / scale))
 
 
-def naive_siem_score(incident: CandidateIncident) -> float:
+def naive_siem_score(
+    incident: CandidateIncident,
+    config: RiskParameters | None = None,
+) -> float:
     """Deliberately naive: sum raw-alert severity weights. No dedup credit."""
+    cfg = _cfg(config)
     return float(
-        sum(SEVERITY_WEIGHTS[alert.severity_raw] * alert.event_count for alert in incident.alerts)
+        sum(cfg.severity_weight(alert.severity_raw) * alert.event_count for alert in incident.alerts)
     )
 
 
-def _title(incident: CandidateIncident) -> str:
+def _title(incident: CandidateIncident, config: RiskParameters) -> str:
     assets = _assets_for(incident)
     identities = _identities_for(incident)
     if assets:
-        jewel = max(assets, key=_asset_score)
+        jewel = max(assets, key=lambda asset: _asset_score(asset, config))
         where = f"{jewel.hostname} ({jewel.environment})"
     elif incident.unique_hosts:
         where = incident.unique_hosts[0]
@@ -317,7 +321,7 @@ def _title(incident: CandidateIncident) -> str:
         what = incident.alerts[0].rule_name
     if identities:
         who = max(
-            identities, key=lambda ident: PRIVILEGE_WEIGHT[ident.privilege_tier]
+            identities, key=lambda ident: config.privilege_weight(ident.privilege_tier)
         ).user_id
     elif incident.unique_users:
         who = incident.unique_users[0]
@@ -363,14 +367,16 @@ def ablation_attribution(
     progression_k: float,
     blast_c: float,
     evidence: dict[str, str],
+    config: RiskParameters | None = None,
 ) -> list[RiskDriver]:
     """Counterfactual ablation. Only positive score drops enter the 100% pie."""
-    real = normalize_risk(raw_risk(fidelity_b, progression_k, blast_c))
-    drop_b = real - normalize_risk(raw_risk(FIDELITY_BASELINE, progression_k, blast_c))
-    drop_k = real - normalize_risk(raw_risk(fidelity_b, PROGRESSION_BASELINE, blast_c))
-    drop_c = real - normalize_risk(raw_risk(fidelity_b, progression_k, BLAST_BASELINE))
-    clean_b, _ = score_threat_fidelity(incident, fpr_override=0.0)
-    without_fp = normalize_risk(raw_risk(clean_b, progression_k, blast_c))
+    cfg = _cfg(config)
+    real = normalize_risk(raw_risk(fidelity_b, progression_k, blast_c), cfg)
+    drop_b = real - normalize_risk(raw_risk(cfg.fidelity_baseline, progression_k, blast_c), cfg)
+    drop_k = real - normalize_risk(raw_risk(fidelity_b, cfg.progression_baseline, blast_c), cfg)
+    drop_c = real - normalize_risk(raw_risk(fidelity_b, progression_k, cfg.blast_baseline), cfg)
+    clean_b, _ = score_threat_fidelity(incident, cfg, fpr_override=0.0)
+    without_fp = normalize_risk(raw_risk(clean_b, progression_k, blast_c), cfg)
     fp_suppression = without_fp - real
     weights = {
         ATTRIBUTION_FACTORS[0]: drop_b,
@@ -389,15 +395,19 @@ def ablation_attribution(
     ]
 
 
-def score_incident(incident: CandidateIncident) -> ScoredIncident:
-    fidelity_b, fid_ev = score_threat_fidelity(incident)
-    progression_k, prog_ev = score_progression(incident)
-    asset_risk, asset_ev = score_business_impact(incident)
-    identity_risk, priv_ev = score_privilege(incident)
-    blast_c = blast_radius(asset_risk, identity_risk)
+def score_incident(
+    incident: CandidateIncident,
+    config: RiskParameters | None = None,
+) -> ScoredIncident:
+    cfg = _cfg(config)
+    fidelity_b, fid_ev = score_threat_fidelity(incident, cfg)
+    progression_k, prog_ev = score_progression(incident, cfg)
+    asset_risk, asset_ev = score_business_impact(incident, cfg)
+    identity_risk, priv_ev = score_privilege(incident, cfg)
+    blast_c = blast_radius(asset_risk, identity_risk, cfg)
     raw = raw_risk(fidelity_b, progression_k, blast_c)
-    risk = normalize_risk(raw)
-    clean_b, _ = score_threat_fidelity(incident, fpr_override=0.0)
+    risk = normalize_risk(raw, cfg)
+    clean_b, _ = score_threat_fidelity(incident, cfg, fpr_override=0.0)
     drivers = ablation_attribution(
         incident,
         fidelity_b=fidelity_b,
@@ -407,15 +417,17 @@ def score_incident(incident: CandidateIncident) -> ScoredIncident:
             ATTRIBUTION_FACTORS[0]: _join_evidence(fid_ev),
             ATTRIBUTION_FACTORS[1]: _join_evidence(prog_ev),
             ATTRIBUTION_FACTORS[2]: (
-                f"C = {BLAST_ASSET_WEIGHT:.2f}×{asset_risk:.3f} + "
-                f"{BLAST_IDENTITY_WEIGHT:.2f}×{identity_risk:.3f} = {blast_c:.3f}; "
+                f"C = {cfg.asset_context_weight:.2f}×{asset_risk:.3f} + "
+                f"{cfg.identity_context_weight:.2f}×{identity_risk:.3f} = {blast_c:.3f}; "
                 + _join_evidence(asset_ev + priv_ev)
             ),
             ATTRIBUTION_FACTORS[3]: (
                 f"B with FPR=0 is {clean_b:.3f} vs observed B={fidelity_b:.3f}"
             ),
         },
+        config=cfg,
     )
+    digest = cfg.fingerprint()
     breakdown = RiskBreakdown(
         risk_score=round(risk, 4),
         fidelity_b=round(fidelity_b, 6),
@@ -424,19 +436,36 @@ def score_incident(incident: CandidateIncident) -> ScoredIncident:
         asset_risk=round(asset_risk, 6),
         identity_risk=round(identity_risk, 6),
         drivers=drivers,
-        formula=FORMULA,
+        formula=cfg.formula_text(),
         raw_weighted_score=round(raw, 4),
+        model_name=cfg.model_name,
+        model_version=cfg.model_version,
+        config_hash=digest,
+        fidelity_cap=cfg.fidelity_cap,
+        normalization_scale=cfg.normalization_scale,
+        asset_context_weight=cfg.asset_context_weight,
+        identity_context_weight=cfg.identity_context_weight,
+        tactic_progression_weight=cfg.tactic_progression_weight,
+        sensor_corroboration_weight=cfg.sensor_corroboration_weight,
+        completion_weight=cfg.completion_weight,
     )
     return ScoredIncident(
         incident=incident,
         risk=breakdown,
-        legacy_score=round(naive_siem_score(incident), 3),
-        title=_title(incident),
+        legacy_score=round(naive_siem_score(incident, cfg), 3),
+        title=_title(incident, cfg),
+        risk_model_name=cfg.model_name,
+        risk_model_version=cfg.model_version,
+        risk_config_hash=digest,
     )
 
 
-def score_incidents(incidents: Iterable[CandidateIncident]) -> list[ScoredIncident]:
-    scored = [score_incident(incident) for incident in incidents]
+def score_incidents(
+    incidents: Iterable[CandidateIncident],
+    config: RiskParameters | None = None,
+) -> list[ScoredIncident]:
+    cfg = _cfg(config)
+    scored = [score_incident(incident, cfg) for incident in incidents]
     scored.sort(key=lambda item: (-item.risk.risk_score, item.incident.incident_id))
     legacy_order = sorted(
         scored, key=lambda item: (-item.legacy_score, item.incident.incident_id)

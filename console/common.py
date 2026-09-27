@@ -38,15 +38,9 @@ from engine.schemas import PipelineResult, ScoredIncident
 
 
 def priority(score: float) -> str:
-    if score >= 85:
-        return "P0"
-    if score >= 70:
-        return "P1"
-    if score >= 50:
-        return "P2"
-    if score >= 30:
-        return "P3"
-    return "P4"
+    from engine.risk_config import get_active_risk_config, priority_from_score
+
+    return priority_from_score(score, get_active_risk_config())
 
 
 def severity_token(severity: str) -> str:
@@ -518,11 +512,35 @@ def session_chrome() -> None:
 
 
 def demo_admin_controls() -> None:
+    from engine.risk_config import get_active_risk_config
+
+    cfg = get_active_risk_config()
     with st.expander("Demo / admin", expanded=False):
         st.caption("These controls reset local session state. They do not change scores or source data.")
         if st.button("Reset case state", key="reset-case-state"):
             reset_case_state()
             st.rerun()
+        st.markdown("**Active Risk Model**")
+        st.caption("Expert-defined prototype parameters. Not machine-learned.")
+        st.markdown(
+            f"`{cfg.model_version}` · hash `{cfg.short_hash()}` · "
+            f"{cfg.calibration.source}"
+        )
+        st.dataframe(
+            [
+                {"Parameter": "Tactic progression", "Value": f"{cfg.tactic_progression_weight:.2f}"},
+                {"Parameter": "Sensor corroboration", "Value": f"{cfg.sensor_corroboration_weight:.2f}"},
+                {"Parameter": "Completion", "Value": f"{cfg.completion_weight:.2f}"},
+                {"Parameter": "FP dampening", "Value": f"{cfg.false_positive_dampening:.2f}"},
+                {"Parameter": "Duplicate influence", "Value": f"{cfg.duplicate_volume_weight:.2f}"},
+                {"Parameter": "Asset share", "Value": f"{cfg.asset_context_weight:.2f}"},
+                {"Parameter": "Identity share", "Value": f"{cfg.identity_context_weight:.2f}"},
+                {"Parameter": "Normalization scale", "Value": f"{cfg.normalization_scale:.0f}"},
+                {"Parameter": "Fidelity cap", "Value": f"{cfg.fidelity_cap:.0f}"},
+            ],
+            hide_index=True,
+            width="stretch",
+        )
 
 
 def defined_metric(key: str, label: str, value) -> None:

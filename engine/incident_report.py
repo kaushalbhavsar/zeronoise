@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
-from config import BLAST_ASSET_WEIGHT, BLAST_IDENTITY_WEIGHT, FIDELITY_CAP, KILL_CHAIN, RISK_SCALE
+from config import KILL_CHAIN
 from engine.presentation import (
     PRIVILEGED_TIERS,
     context_badges,
@@ -164,6 +164,15 @@ class RiskCalculationDetails(BaseModel):
     scale: float
     noise_note: str
     drivers: list[ReportRiskDriver] = Field(default_factory=list)
+    model_name: str = "ZeroNoise Risk Model"
+    model_version: str = "ZN-RISK-1.0"
+    config_hash: str = ""
+    fidelity_cap: float = 35.0
+    asset_context_weight: float = 0.65
+    identity_context_weight: float = 0.35
+    tactic_progression_weight: float = 0.35
+    sensor_corroboration_weight: float = 0.20
+    completion_weight: float = 0.50
 
 
 class ExportMetadata(BaseModel):
@@ -743,9 +752,18 @@ def build_incident_report(
             asset_risk=float(item.risk.asset_risk),
             identity_risk=float(item.risk.identity_risk),
             risk_score=float(item.risk.risk_score),
-            scale=float(RISK_SCALE),
+            scale=float(item.risk.normalization_scale),
             noise_note=noise,
             drivers=drivers,
+            model_name=item.risk_model_name or item.risk.model_name,
+            model_version=item.risk_model_version or item.risk.model_version,
+            config_hash=item.risk_config_hash or item.risk.config_hash,
+            fidelity_cap=float(item.risk.fidelity_cap),
+            asset_context_weight=float(item.risk.asset_context_weight),
+            identity_context_weight=float(item.risk.identity_context_weight),
+            tactic_progression_weight=float(item.risk.tactic_progression_weight),
+            sensor_corroboration_weight=float(item.risk.sensor_corroboration_weight),
+            completion_weight=float(item.risk.completion_weight),
         ),
         detections=detections,
         correlation_edges=edges,
@@ -786,9 +804,11 @@ def _stacked_formula(calc: RiskCalculationDetails) -> list[str]:
     return [
         f"risk_score = 100 × (1 − exp(−RawRisk / {calc.scale:.0f}))",
         "RawRisk    = B × K × C",
-        f"B          = min(Σ fidelity_a over unique (rule, tactic), {FIDELITY_CAP:.0f})",
-        "K          = 1 + 0.35×max(0, m-1) + 0.20×max(0, s-1) + 0.50×completion",
-        f"C          = {BLAST_ASSET_WEIGHT:.2f}×asset_risk + {BLAST_IDENTITY_WEIGHT:.2f}×P_priv",
+        f"B          = min(Σ fidelity_a over unique (rule, tactic), {calc.fidelity_cap:.0f})",
+        f"K          = 1 + {calc.tactic_progression_weight:.2f}×max(0, m-1) + "
+        f"{calc.sensor_corroboration_weight:.2f}×max(0, s-1) + "
+        f"{calc.completion_weight:.2f}×completion",
+        f"C          = {calc.asset_context_weight:.2f}×asset_risk + {calc.identity_context_weight:.2f}×P_priv",
     ]
 
 
@@ -1067,6 +1087,16 @@ def render_report_markdown(report: IncidentReportModel) -> str:
         )
     )
     lines.append("")
+    if calc.model_version or calc.config_hash:
+        lines.extend(
+            [
+                f"Risk model: {calc.model_version or calc.model_name}",
+                f"Configuration hash: {calc.config_hash[:12] if calc.config_hash else '—'}",
+                f"Normalization scale: {calc.scale:.0f}",
+                f"Fidelity cap: {calc.fidelity_cap:.0f}",
+                "",
+            ]
+        )
     if calc.noise_note:
         lines.extend([f"FPR comparison: {show(calc.noise_note)}", ""])
     lines.extend(

@@ -170,6 +170,11 @@ def test_case_markdown_matches_workspace_context() -> None:
     assert 0 <= first_rank < first_formula
     assert "| **RawRisk** |" in text
     assert "| **B** |" in text
+    assert "Risk model: ZN-RISK-1.0" in text
+    assert "Configuration hash:" in text
+    assert item.risk_config_hash[:12] in text
+    assert "Normalization scale: 45" in text
+    assert "Fidelity cap: 35" in text
 
 
 def test_case_markdown_does_not_invent_history() -> None:

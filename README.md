@@ -97,7 +97,7 @@ RawRisk    = B × K × C
 risk_score = 100 × (1 − exp(−RawRisk / 45))
 ```
 
-`RISK_SCALE = 45` was chosen on the seed-42 dataset so multi-stage incidents saturate into the 70–90 band and isolated noise stays in the single digits. RawRisk is not shown on the analyst card. Scores are not assigned per `scenario_id`.
+The coefficients above are the **ZN-RISK-1.0** defaults. They live in `config/risk-model.yaml`, not in `risk_scorer.py`. `normalization_scale = 45` was chosen on the seed-42 dataset so multi-stage incidents saturate into the 70–90 band and isolated noise stays in the single digits. RawRisk is not shown on the analyst card. Scores are not assigned per `scenario_id`.
 
 Attribution is **counterfactual ablation**, not an independent split of B, K, and C. Each factor is replaced with its baseline (B → 2.0, K → 1.0, C → 1.0, FPR → 0) and the score drop (or FP-suppression lift) is renormalized to integer percents that sum to 100.
 
@@ -110,7 +110,76 @@ Attribution is **counterfactual ablation**, not an independent split of B, K, an
 
 Volume has strongly diminishing returns. 120 identical Critical alerts are not 120 attack stages.
 
-Given the same dataset and `config.py`, ranking, scores, and attribution percentages are identical every run.
+Given the same dataset and the same risk-model file, ranking, scores, and attribution percentages are identical every run.
+
+## Risk Model Configuration
+
+**ZN-RISK-1.0 uses expert-defined prototype parameters. They have not yet been calibrated against production SOC outcomes.**
+
+| Concern | Where it lives |
+| --- | --- |
+| Risk model **logic** (how B, K, and C combine) | `engine/risk_scorer.py` |
+| Risk model **parameters** (how strongly each factor counts) | `config/risk-model.yaml` + `engine/risk_config.py` |
+
+Changing `0.35` to `0.42` requires only a new configuration file. Changing the shape of `K = …` requires a new risk-model implementation/version.
+
+Default file: `config/risk-model.yaml`. Load once at pipeline start with `load_risk_config()`. If the file is missing, ZeroNoise uses built-in `RiskParameters()` defaults and logs that fact. If the file exists but is invalid, load fails fast.
+
+Create a new version by copying the file:
+
+```text
+config/risk-model.yaml
+config/risk-model-v1.1.yaml
+config/risk-model-experimental.yaml
+```
+
+Then pass that path into `load_risk_config()` / `run_pipeline(risk_config=...)`. The scorer accepts any valid `RiskParameters` object.
+
+Every scored incident stores `risk_model_version` and a SHA-256 `risk_config_hash` of the canonical parameter set (calibration metrics are excluded). The export appendix prints both so a historical score can be reproduced even if the active file later changes.
+
+Validation rejects: context weights that do not sum to 1.0, priority bands that are not strictly descending (`P0 > P1 > P2 > P3`), a zero/negative normalization scale, FP dampening outside `[0, 1]`, unknown keys, negative additive multipliers, and a sensor weight that exceeds the tactic-progression weight.
+
+### Parameter meaning
+
+| Parameter | What it controls |
+| --- | --- |
+| `tactic_progression_weight` | How much each extra ATT&CK stage raises K. Higher: multi-stage attacks rise faster. Lower: progression matters less. |
+| `sensor_corroboration_weight` | How much each extra sensor raises K. Higher: cross-sensor incidents rise faster. |
+| `completion_weight` | Bonus on K when Exfiltration or Impact is observed. |
+| `false_positive_dampening` | How strongly a high FPR reduces per-alert fidelity. Higher: noisy rules contribute less. |
+| `duplicate_volume_weight` | Log-volume coefficient (`1 + w × log1p(n − 1)`). Higher: repeated detections matter more. |
+| `asset_context_weight` | Share of C from the highest-risk asset. Must sum with identity share to 1.0. |
+| `identity_context_weight` | Share of C from the highest-risk identity. |
+| `normalization_scale` | Saturating-map scale. Higher: scores rise more slowly toward 100. |
+| `fidelity_cap` | Maximum accumulated B. Higher: more distinct detections can add before saturation. |
+| `severity_weights` | Vendor Low / Medium / High / Critical → fidelity points. |
+| `environment_weights` | sandbox / dev / staging / prod asset multipliers. |
+| `data_sensitivity_weights` | public → crown-jewel / PII / PCI asset multipliers. |
+| `privilege_weights` | standard user → tier-0 admin identity multipliers. |
+| `business_criticality_weights` | Explicit CMDB 1–5 mapping (not a generated linear formula). |
+| `p0_threshold` … `p3_threshold` | Inclusive score bands. Below P3 is P4. |
+| `correlation_window_hours` | Maximum time gap for joining related alerts. |
+| `dedup_window_minutes` | Rolling window that collapses duplicate detections. |
+
+### Parameter impact
+
+| Parameter | Increasing it causes |
+| --- | --- |
+| `tactic_progression_weight` | Multi-stage incidents rank higher |
+| `sensor_corroboration_weight` | Cross-sensor incidents rank higher |
+| `completion_weight` | Exfiltration/Impact incidents rank higher |
+| `false_positive_dampening` | High-FP rules contribute less |
+| `duplicate_volume_weight` | Repeated detections matter more |
+| `asset_context_weight` | Business asset value matters more |
+| `identity_context_weight` | Privileged accounts matter more |
+| `normalization_scale` | Scores rise more slowly toward 100 |
+| `fidelity_cap` | More detection evidence can accumulate before saturation |
+
+### Provenance and reproducibility
+
+`calibration.source` is `expert_defined` until a measured calibration exists. Do not invent NDCG or recall figures. The Demo / admin panel shows the active version, config hash, and coefficients, labeled as prototype parameters.
+
+Every score stores `risk_model_version` and `risk_config_hash` (SHA-256 of the canonical JSON, excluding `calibration`). Historical incidents keep the hash they were scored with even if the active file later changes. Future calibration should produce a new YAML file and pass that `RiskParameters` object into the same scorer.
 
 ## Explainability
 

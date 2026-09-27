@@ -1,0 +1,77 @@
+# ZN-RISK-1.0 — expert-defined prototype parameters.
+# These values have not been calibrated against production SOC outcomes.
+# Changing a coefficient here does not change the scoring equations.
+# Changing the equations requires a new risk-model implementation.
+
+model_name: ZeroNoise Risk Model
+model_version: ZN-RISK-1.0
+
+severity_weights:
+  low: 2
+  medium: 5
+  high: 10
+  critical: 15
+
+environment_weights:
+  sandbox: 0.4
+  dev: 0.7
+  staging: 1.0
+  prod: 1.4
+
+data_sensitivity_weights:
+  public: 0.5
+  internal: 0.9
+  confidential: 1.4
+  crown_jewel_pii_pci: 2.0
+
+privilege_weights:
+  standard_user: 0.5
+  service_account: 1.0
+  tier_1_cloud_admin: 1.4
+  tier_0_domain_admin: 1.8
+
+business_criticality_weights:
+  1: 0.4
+  2: 0.8
+  3: 1.2
+  4: 1.6
+  5: 2.0
+
+tactic_progression_weight: 0.35
+sensor_corroboration_weight: 0.20
+completion_weight: 0.50
+false_positive_dampening: 0.70
+duplicate_volume_weight: 0.10
+asset_context_weight: 0.65
+identity_context_weight: 0.35
+asset_environment_blend: 0.35
+asset_data_blend: 0.35
+asset_criticality_blend: 0.30
+asset_score_min: 0.4
+asset_score_max: 2.0
+fidelity_cap: 35.0
+normalization_scale: 45.0
+p0_threshold: 85
+p1_threshold: 70
+p2_threshold: 50
+p3_threshold: 30
+correlation_window_hours: 4
+dedup_window_minutes: 15
+progression_base: 1.0
+completion_tactics:
+  - Exfiltration
+  - Impact
+neutral_impact: 0.90
+neutral_privilege: 0.70
+unobserved_privilege: 0.50
+fidelity_baseline: 2.0
+progression_baseline: 1.0
+blast_baseline: 1.0
+
+calibration:
+  source: expert_defined
+  calibration_date: null
+  incident_count: null
+  ndcg_at_5: null
+  ndcg_at_10: null
+  critical_recall_at_10: null
